@@ -1,0 +1,13 @@
+{
+  "name": "servio",
+  "description": "The Servio team's plugins.",
+  "owner": { "name": "Servio team" },
+  "plugins": [
+    {
+      "name": "servio-agent",
+      "source": "./",
+      "description": "Ploi-like server work over SSH: provision, sites, deploys, SSL, inventory.",
+      "category": "devops"
+    }
+  ]
+}
