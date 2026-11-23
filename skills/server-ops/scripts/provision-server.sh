@@ -5,7 +5,7 @@
 #   bash run.sh web1 provision-server.sh 8.4            one PHP version (8.3, 8.4 or 8.5)
 #   bash run.sh web1 provision-server.sh 8.4 8.3        8.4 is the default, 8.3 installed too
 #
-# Installs nginx, PHP-FPM (from the ondrej PPA) in every version asked for, Composer, git,
+# Installs nginx, PHP-FPM (from the ondrej PPA) in every version asked for, Composer, Node.js, git,
 # Supervisor (it runs queue workers later) and a firewall (UFW). Ported from Servio's ProvisionServer.
 # Sites are NOT run by a shared user any more: create-site.sh gives each site its own Linux user
 # and PHP-FPM pool (decision 6). Each PHP version's default "www" pool is set to start no
@@ -61,7 +61,7 @@ main() {
 
     step "Installing base packages"
     apt_get update
-    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor
+    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor gnupg
 
     step "Adding the ondrej/php package source"
     if ! grep -rqs "ondrej/php" /etc/apt/sources.list.d/; then
@@ -101,6 +101,25 @@ main() {
         rm -f /tmp/composer-setup.php
     fi
 
+    step "Installing Node.js $NODE_MAJOR (for frontend builds: npm run build)"
+    # Ubuntu's own nodejs is too old for Vite (22.04: Node 12, 24.04: Node 18). NodeSource's apt
+    # source, with its signing key in /etc/apt/keyrings: apt checks every package against it.
+    # (Not `curl ... | bash`: nothing downloaded is executed.)
+    local node_major
+    node_major="$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || true)"
+    if [[ "$node_major" =~ ^[0-9]+$ ]] && [ "$node_major" -ge "$NODE_MAJOR" ]; then
+        echo "Already installed: Node $(node -v)."
+    elif dry_run; then
+        echo "[dry-run] would add NodeSource's apt source (node_$NODE_MAJOR.x, signed) and install nodejs"
+    else
+        install -d -m 755 /etc/apt/keyrings
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" \
+            | write_file /etc/apt/sources.list.d/nodesource.list 644 root:root
+        apt_get update
+        apt_get install nodejs
+    fi
+
     step "PHP-FPM: the default pools use no memory until needed"
     # Every site gets its own pool (create-site.sh). PHP-FPM refuses to start with NO pool at
     # all, so each version keeps its default "www" pool, but switched to "ondemand": it starts
@@ -115,6 +134,8 @@ main() {
     run systemctl enable --now supervisor
 
     step "Starting nginx"
+    # The sites' access-log format with the request time (traffic.sh reads it).
+    ensure_log_format
     if ! dry_run; then nginx -t 2>&1; fi
     run systemctl enable nginx
     run systemctl restart nginx
@@ -150,6 +171,7 @@ main() {
         fi
     done
     if COMPOSER_ALLOW_SUPERUSER=1 composer --version >/dev/null 2>&1; then check_pass "Composer works"; else check_fail "Composer works"; fi
+    if npm --version >/dev/null 2>&1; then check_pass "Node.js and npm work" "$(node -v)"; else check_fail "Node.js and npm work"; fi
     check_summary || die "Provisioning finished, but something isn't right (see above)."
 
     step "Done"

@@ -27,7 +27,7 @@ main() {
     basics "$domain" "$user" "$dir"
 
     step "Code"
-    code_info "$user" "$dir"
+    code_info "$domain"
 
     step "Last deploys (action log)"
     last_deploys "$domain" "$ACTION_LOG" 5
@@ -36,7 +36,7 @@ main() {
     deploy_key "$domain"
 
     step "Workers and scheduler"
-    workers "$user"
+    workers "$domain"
 
     step "nginx config in use"
     show_config "$(nginx_enabled "$domain")"
@@ -66,22 +66,23 @@ basics() {
 }
 
 code_info() {
-    local user="$1" dir="$2" repo branch commit date
-    if [ ! -d "$dir/.git" ]; then echo "Not deployed from git yet."; return; fi
-    # As the site user: git refuses a repo owned by someone else.
-    repo="$(runuser -u "$user" -- git -C "$dir" remote get-url origin 2>/dev/null || true)"
-    branch="$(runuser -u "$user" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    commit="$(runuser -u "$user" -- git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-    date="$(runuser -u "$user" -- git -C "$dir" log -1 --format=%cI 2>/dev/null || true)"
-    # Each value is checked: they come from files a deploy controls.
-    [[ "$repo" =~ ^(git@[a-z0-9.-]+:|https://[a-z0-9.-]+(:[0-9]{1,5})?/)[A-Za-z0-9._/-]{1,200}$ ]] || repo="unknown or unusual"
-    [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || branch="unknown"
-    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || commit="unknown"
-    [[ "$date" =~ ^[0-9T:+-]{19,25}$ ]] || date="unknown"
-    echo "repository: $repo"
-    echo "branch:     $branch"
-    echo "commit:     $commit (committed $date)"
-    echo "working tree: $(runuser -u "$user" -- git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ') changed file(s) on the server (should be 0)"
+    local domain="$1" release name list="" count=0
+    release="$(current_release "$domain")"
+    if [ -z "$release" ] || [ "$release" = "00000000-000000-placeholder" ]; then
+        echo "Not deployed yet$(is_in_place_site "$domain" && echo ' (an old v0.3 in-place checkout: recreate the site)')."
+        return
+    fi
+    # .servio-release of the live release: written by deploy-site.sh, every value checked.
+    read_release "$(site_releases "$domain")/$release"
+    echo "live release: $release"
+    echo "repository:   ${REL_REPOSITORY:-unknown}"
+    echo "branch:       ${REL_BRANCH:-unknown}"
+    echo "commit:       ${REL_COMMIT:-unknown}"
+    echo "deployed:     ${REL_TIME:-unknown} by ${REL_BY:-unknown}"
+    for name in $(release_names "$domain"); do
+        count=$((count + 1)); list="$list $name"
+    done
+    echo "releases:     $count kept:${list}"
 }
 
 # last_deploys <domain> <action log> <n>: time, who, result, duration of the last n deploys.
@@ -113,21 +114,19 @@ deploy_key() {
 }
 
 workers() {
-    local user="$1" status cron
+    local domain="$1" status
     if command -v supervisorctl >/dev/null 2>&1; then
-        # Our worker programs are named after the site user (v0.5): <user>-<name>.
-        status="$(supervisorctl status 2>/dev/null | awk -v u="$user" 'index($1, u) == 1 { print $1, $2 }' \
-            | grep -E '^[a-z0-9_:-]{1,100} [A-Z]{1,20}$' || true)"
+        # The site's programs are named after its user: <user>-worker, -horizon, -reverb.
+        status="$(site_worker_status "$domain")"
         if [ -n "$status" ]; then printf '%s\n' "$status" | sed 's/^/  worker: /'
         else echo "  workers: none in Supervisor"; fi
     else
         echo "  workers: Supervisor not installed"
     fi
-    if crontab -l -u "$user" >/dev/null 2>&1; then
-        cron="$(crontab -l -u "$user" 2>/dev/null | grep -cvE '^\s*(#|$)' || true)"
-        echo "  cron:    $cron line(s) for $user$(crontab -l -u "$user" 2>/dev/null | grep -q 'schedule:run' && echo ', Laravel scheduler included')"
+    if site_has_scheduler "$domain"; then
+        echo "  scheduler: on (cron runs schedule:run every minute)"
     else
-        echo "  cron:    none for $user"
+        echo "  scheduler: off"
     fi
 }
 

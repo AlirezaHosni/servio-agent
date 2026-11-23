@@ -212,10 +212,10 @@ check_permissions() {
 
     for dir in "$HOME_BASE"/s_*/; do
         [ -d "$dir" ] || continue
-        for f in "$dir"*/.env; do
+        for f in "$dir"*/shared/.env; do
             [ -f "$f" ] && [ ! -L "$f" ] || continue
             mode="$(stat -c '%a' "$f")"
-            [ $((8#$mode & 8#007)) -eq 0 ] || bad_env="$bad_env $(basename "$(dirname "$f")")($mode)"
+            [ $((8#$mode & 8#007)) -eq 0 ] || bad_env="$bad_env $(basename "$(dirname "$(dirname "$f")")")($mode)"
         done
     done
     [ -z "$bad_env" ] && check_pass ".env files" "none readable by others" \
@@ -231,15 +231,15 @@ check_sites() {
     local audit="$1" dir domain user debug result any=0
     for dir in "$HOME_BASE"/s_*/*/; do
         dir="${dir%/}"
-        [ -f "$dir/artisan" ] || continue
+        [ -f "$dir/current/artisan" ] || continue
         domain="$(basename "$dir")"
         [[ "$domain" =~ ^[a-z0-9.-]{1,253}$ ]] || continue
         user="$(site_user "$domain")"
         [ "$(basename "$(dirname "$dir")")" = "$user" ] || continue
         any=1
         # APP_DEBUG: only the answer leaves this function, never the line. As the site user.
-        if [ -f "$dir/.env" ]; then
-            debug="$(runuser -u "$user" -- grep -E '^\s*APP_DEBUG\s*=' "$dir/.env" 2>/dev/null | tail -n 1 \
+        if [ -f "$dir/shared/.env" ]; then
+            debug="$(runuser -u "$user" -- grep -E '^\s*APP_DEBUG\s*=' "$dir/shared/.env" 2>/dev/null | tail -n 1 \
                 | sed -E 's/^[^=]*=\s*//; s/["'\'' ]//g' | tr 'A-Z' 'a-z' || true)"
             case "$debug" in
                 true|1|on|yes) check_fail "$domain APP_DEBUG" "on: visitors see error details (and sometimes secrets)" ;;
@@ -248,9 +248,9 @@ check_sites() {
         fi
         if [ "$audit" -eq 1 ]; then
             if ! command -v composer >/dev/null 2>&1; then check_na "$domain composer audit" "composer missing"
-            elif [ ! -f "$dir/composer.lock" ]; then check_na "$domain composer audit" "no composer.lock"
+            elif [ ! -f "$dir/current/composer.lock" ]; then check_na "$domain composer audit" "no composer.lock"
             else
-                result="$(cd "$dir" && runuser -u "$user" -- env HOME="$(site_home "$domain")" COMPOSER_NO_INTERACTION=1 \
+                result="$(cd "$dir/current" && runuser -u "$user" -- env HOME="$(site_home "$domain")" COMPOSER_NO_INTERACTION=1 \
                     timeout 60 composer audit --locked --no-ansi --format=summary 2>&1 || true)"
                 audit_result "$domain" "$result"
             fi

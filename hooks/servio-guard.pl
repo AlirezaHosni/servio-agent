@@ -25,8 +25,8 @@ use JSON::PP;
 use File::Basename qw(dirname);
 use File::Spec;
 
-my @READ_ONLY = qw(inventory.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh job-status.sh);
-my @CHANGES   = qw(provision-server.sh create-site.sh deploy-site.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-stop.sh);
+my @READ_ONLY = qw(inventory.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh project-check.sh deploy-history.sh job-status.sh);
+my @CHANGES   = qw(provision-server.sh create-site.sh deploy-site.sh rollback-site.sh workers.sh artisan.sh restart-service.sh domains.sh suspend-site.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-stop.sh);
 my $MAX_LEN   = 20000;   # longer commands aren't checked: asked instead (and no slow regexes)
 
 sub decide {

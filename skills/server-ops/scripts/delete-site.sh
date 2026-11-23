@@ -47,6 +47,7 @@ main() {
         echo "  nginx config:  $( [ -f "$available" ] && echo "$available (and its backups)" || echo none)"
         echo "  certificate:   $( [ -d "$LETSENCRYPT_DIR/live/$domain" ] && echo "$LETSENCRYPT_DIR/live/$domain" || echo none)"
         echo "  PHP-FPM pool:  $( [ -n "$versions" ] && echo "PHP $versions ($(pool_file "$domain" "${versions%% *}"))" || echo none)"
+        echo "  workers:       $(site_worker_status "$domain" | awk '{print $1}' | sed 's/:.*//' | sort -u | tr '\n' ' ')$( [ -f "$(scheduler_file "$domain")" ] && echo "+ the scheduler (cron)")"
         echo "  logs:          /var/log/nginx/$domain-*.log*"
         echo "  site user:     $( id "$user" >/dev/null 2>&1 && echo "$user" || echo "none ($user doesn't exist)")"
         echo "  its home:      $( [ -d "$home" ] && echo "$home ($(du -sh "$home" 2>/dev/null | cut -f1)): the site, .env, uploads, SQLite files, the deploy key" || echo none)"
@@ -82,6 +83,20 @@ main() {
         systemctl reload "php$v-fpm"
         echo "PHP $v: pool removed."
     done
+
+    # Before the user goes: Supervisor would keep restarting its workers, and cron would keep
+    # starting its scheduler, as a user that no longer exists.
+    step "Removing the site's workers and scheduler"
+    local kind removed=0
+    for kind in $WORKER_KINDS; do
+        if [ -f "$(worker_conf "$domain" "$kind")" ]; then rm -f "$(worker_conf "$domain" "$kind")"; removed=1; fi
+    done
+    if [ "$removed" -eq 1 ] && command -v supervisorctl >/dev/null 2>&1; then
+        supervisorctl reread >/dev/null 2>&1 || true
+        supervisorctl update 2>&1 || true
+    fi
+    rm -f "$(scheduler_file "$domain")" "$(logrotate_file "$domain")"
+    [ "$removed" -eq 1 ] && echo "Workers removed." || echo "No workers."
 
     step "Removing the logs"
     rm -f "/var/log/nginx/$domain-access.log"* "/var/log/nginx/$domain-error.log"*

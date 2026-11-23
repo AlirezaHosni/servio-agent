@@ -4,7 +4,7 @@
 #   bash run.sh <host> logs.sh <domain> [laravel|error|access] [lines]   # a site's logs (item 5)
 #   bash run.sh <host> logs.sh server [auth|syslog|logins] [lines]       # the server's (item 78)
 #
-#   laravel  storage/logs: laravel.log, or the newest laravel-YYYY-MM-DD.log (daily logs)
+#   laravel  shared/storage/logs: laravel.log, or the newest laravel-YYYY-MM-DD.log (daily logs)
 #   error    nginx's error log for the site (the default for a site)
 #   access   nginx's access log for the site (see traffic.sh for a summary instead)
 #   auth     SSH: logins (who, how, from where), then failed attempts counted per address
@@ -88,7 +88,7 @@ newest_laravel_log() {
 site_laravel_log() {
     local domain="$1" lines="$2" user logs file
     user="$(site_user "$domain")"
-    logs="$(site_dir "$domain")/storage/logs"
+    logs="$(site_shared "$domain")/storage/logs"
     id "$user" >/dev/null 2>&1 || die_state "No site user $user: $domain isn't set up on this server."
     [ -d "$logs" ] && [ ! -L "$logs" ] || die_state "No $logs (not deployed, or not a Laravel app)."
     file="$(newest_laravel_log "$logs")"

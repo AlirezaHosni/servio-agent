@@ -24,6 +24,17 @@ only checks this file's shape.
 - What files are in storage/logs of shop.example.com?
 - Is web1 secure? Run a security check.
 - How many PHP workers can web2 handle?
+- What does the shop project need on web1 before I deploy it?
+- Why don't my queued jobs run on shop.example.com?
+- Roll back shop.example.com, the last deploy broke checkout.
+- Who deployed shop.example.com this week?
+- Set up queue workers for the emails queue on shop.example.com.
+- Run the migrations on shop.example.com.
+- Restart PHP 8.4 on web1.
+- Add shop.example.org to shop.example.com and redirect www.
+- Suspend shop.example.com, the client hasn't paid.
+- Link this project to shop.example.com on web1.
+- Deploy this project (inside a folder with .servio.json).
 
 ## Should not trigger
 - Write a migration that adds a status column to orders.

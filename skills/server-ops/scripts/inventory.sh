@@ -144,19 +144,22 @@ site_report() {
 
     dir="$(site_dir "$domain")"
     commit="not deployed"; branch="-"; laravel="unknown"; env_file="missing"
-    if [ -d "$dir/.git" ]; then
-        # As the site user: git refuses to read a repo owned by someone else ("dubious ownership").
-        commit="$(runuser -u "$user" -- git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-        [[ "$commit" =~ ^[0-9a-f]{4,40}$ ]] || commit="unknown"
-        branch="$(runuser -u "$user" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-        [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || branch="unknown"
+    # Release layout (v0.5): what `current` points at, and its .servio-release.
+    local release live
+    release="$(current_release "$domain")"
+    live="$(site_current "$domain")"
+    if [ -n "$release" ] && [ "$release" != "00000000-000000-placeholder" ]; then
+        read_release "$(site_releases "$domain")/$release"
+        commit="${REL_COMMIT:0:7}"; [ -n "$commit" ] || commit="unknown"
+        branch="${REL_BRANCH:-unknown}, release $release"
     fi
-    if [ -f "$dir/composer.lock" ]; then
+    if [ -f "$live/composer.lock" ]; then
         # composer.lock is pretty-printed: the "version" line follows the "name" line.
-        laravel="$(awk '/"name": "laravel\/framework"/ { found = 1; next } found && /"version":/ { gsub(/[",]/, "", $2); print $2; exit }' "$dir/composer.lock")"
+        laravel="$(awk '/"name": "laravel\/framework"/ { found = 1; next } found && /"version":/ { gsub(/[",]/, "", $2); print $2; exit }' "$live/composer.lock")"
         [[ "$laravel" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z.]{1,20})?$ ]] && laravel="${laravel#v}" || laravel="not a Laravel app (or unknown)"
     fi
-    [ -f "$dir/.env" ] && env_file="present"
+    [ -f "$(site_env "$domain")" ] && env_file="present"
+    is_in_place_site "$domain" && problem "$domain: an old in-place checkout (v0.3): recreate it to use release folders"
 
     if [ "$managed" = "yes" ]; then
         [ "$user_state" = "$user" ] || problem "$domain: no site user $user (made before v0.3, or half deleted?)"
@@ -176,6 +179,11 @@ site_report() {
     echo "    laravel:   $laravel"
     echo "    .env:      $env_file"
     echo "    deploy key: $([ -f "$(deploy_key_path "$domain").pub" ] && echo present || echo missing)"
+    # Extra names, www redirect and suspension, from the config's servio-* lines (domains.sh, suspend-site.sh).
+    read_site_meta "$domain"
+    [ -z "$SITE_ALIASES" ] || echo "    also:      $SITE_ALIASES"
+    [ -z "$SITE_WWW" ] || echo "    www:       $SITE_WWW -> $domain"
+    if [ "$SITE_SUSPENDED" -eq 1 ]; then echo "    SUSPENDED: visitors see the 503 page (suspend-site.sh resume)"; problem "$domain: suspended"; fi
 }
 
 servio_run "$@"

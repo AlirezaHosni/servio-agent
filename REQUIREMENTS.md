@@ -22,12 +22,12 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 | **v0.2** ✅ built (not yet run on a real server) | Safety base | **Scripts:** 40 action log · 45 long jobs · 48 dry run · 49 four results · 50 exit codes · 51 safe file changes · 52 check the result · 68 masking · 69 site lock. **Hook:** 39 proof-based hook · 43 secrets backstop. **Rules:** 38 no blind re-run · 54 declare scope · 70 approval scope · 84 files outside Claude's context. **Quality:** 55 skill checks · 56 fixture tests · 66 basic CI |
 | **v0.3** ✅ built (not yet run on a real server; Servio panel still to do) | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
 | **v0.4** ✅ built (not yet run on a real server) | See everything (read-only) | 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 78 server logs · 46 runbooks. **Skill text only, no script:** 2 all servers (inventory on each alias, merged) · 47 save as runbook |
-| **v0.5** | Laravel deploys | 11–12 project check · 8 what would deploy · 15 deploy with release folders, health check, npm build, worker restart · 16 rollback · 72 deploy history · 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · 75 project linking · 77 suspend / resume · 73 redirects · 14 domains added later · 17 HSTS and certificate check |
+| **v0.5** ✅ built (not yet run on a real server) | Laravel deploys | **A** 11–12 project check · **B** 15 release folders, health check, npm build, worker restart · 8 commits before deploy · access-log format with request time (14) · **C** 16 rollback · 72 deploy history · **D** 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · **E** 14 extra domains and `www` · 77 suspend / resume · **F** 8 CI status via `gh` (laptop) · 75 project linking · docs |
 | **v0.6** | Data and server care | 18 database setup · 19 database backup to the laptop · 64 file backup · 32 restore (destructive) · 23 change PHP version · 59 apply PHP-FPM sizing · 24 firewall · 25 package updates · 53 harden a server · 74 reboot · 76 alerts |
 | **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
 | **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
 | **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
-| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) |
+| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) · 73 redirects · 17 HSTS switch · maintenance mode around deploys (moved out of v0.5) |
 
 Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
 size needs it; anything mainly useful for big teams is asked about first, not built by default.
@@ -78,7 +78,7 @@ Why this order:
    - permissions: `.env` files, `/etc/shadow`, `sshd_config`, world-writable files in sites
    - `composer audit` (known vulnerable packages); `APP_DEBUG` on (yes/no only)
    - Docker: ports published to the internet instead of `127.0.0.1`
-8. **What would deploy** (new): fetch the branch and list the commits between the live one and the
+8. **What would deploy** (done in v0.5: commits in the deploy dry run; CI via `ci-status.sh` and `gh`): fetch the branch and list the commits between the live one and the
    branch, plus whether their GitHub checks (CI) passed, before you approve a deploy.
 9. **Site files** (done in v0.4): list the folders and files of a site (names, sizes, owners). It never
    shows file contents. `.env` and keys are left out of the listing.
@@ -98,7 +98,7 @@ Why this order:
     on the certificate (`www` too), the full chain, no TLS 1.0/1.1.
 78. **Server logs** (done in v0.4): recent SSH logins and failed attempts (`auth.log`), syslog and the last
     logins, a limited number of lines, secrets masked (68).
-72. **Deploy history** (new): a site's past deploys and rollbacks (time, commit, who, result,
+72. **Deploy history** (done in v0.5: `deploy-history.sh`): a site's past deploys and rollbacks (time, commit, who, result,
     duration), from the releases and the action log (40); one deploy's output can be read again.
 62. **nginx config review** (new): the `add_header` trap (a `location` with its own `add_header`
     silently drops **all** headers from the server level, HSTS included), `.git` / `.env`
@@ -107,7 +107,7 @@ Why this order:
 
 ## B. Project check (read-only, before every deploy)
 
-11. **Analyze the project** (new): read the code that is *about to be deployed* (the fetched commit,
+11. **Analyze the project** (done in v0.5: `project-check.sh`, and in every deploy): read the code that is *about to be deployed* (the fetched commit,
     before it's switched live) and report a deploy plan:
     - **Workers needed**
       - Horizon installed (`laravel/horizon`): run one `horizon` process; its queues come from
@@ -129,7 +129,7 @@ Why this order:
     Docker: compose services.
     Everything it reads from the repo is checked against strict patterns (queue names are
     letters, digits, `-` and `_`), since repo files are untrusted input.
-12. **Plan vs server:** compare the plan with what runs now, e.g. "the code now uses the
+12. **Plan vs server:** (done in v0.5) compare the plan with what runs now, e.g. "the code now uses the
     `emails` queue but no worker listens to it", or "the scheduler isn't set up". Show the
     differences and offer the fix (C-21) before or with the deploy.
 
@@ -140,7 +140,7 @@ Why this order:
     is allowed with `ufw limit` (blocks an IP after too many connection attempts). New (decisions):
     **Supervisor** for workers (decision 2); a **default PHP version** plus more versions installed on
     request (decision 1); **no shared `servio` site user** any more: each site gets its own user (decision 6).
-14. **Create a site** (done; **v0.3**: own user, home, PHP-FPM pool; extra domains still to do): folder, nginx config, deploy key made on the server (only the public
+14. **Create a site** (done; **v0.3**: own user, home, PHP-FPM pool; **v0.5**: release folders, extra domains and www (`domains.sh`), the timed access-log format): folder, nginx config, deploy key made on the server (only the public
     half shown). New (decision 6, **one Linux user per site**): the site gets its own Linux user (a short
     name from the domain plus a hash, max 32 characters, e.g. `s_shopexample_3f2a`), its folder
     `/home/<user>/<domain>`, its deploy key in that user's `~/.ssh`, and **its own PHP-FPM pool**
@@ -150,7 +150,7 @@ Why this order:
     `www` redirect, also **added or removed later** on an
     existing site (the certificate is then extended to cover them); an access-log format that records
     response time (`$request_time`, `$upstream_response_time`) for the traffic summary (A-60).
-15. **Deploy a site** (done): fetch, deploy steps, reload PHP, report the commit. New:
+15. **Deploy a site** (done; **v0.5**: everything below except maintenance mode, which moved to "Later, if needed"): fetch, deploy steps, reload PHP, report the commit. New:
     - **release folders** instead of updating files in place: each deploy goes into
       `releases/<time>-<commit>/`, built as the site user; `storage/` and `.env` are shared and
       symlinked into it; the site switches by moving the `current` symlink (instant, nothing
@@ -164,7 +164,7 @@ Why this order:
     - a **site lock** on the server, so two teammates can't deploy the same site at once (the
       same lock covers every change script on that site, see F-69)
     - optional maintenance mode (`artisan down` / `up`) per site
-16. **Roll back a deploy** (new): point `current` back at the previous release (instant, nothing
+16. **Roll back a deploy** (done in v0.5: `rollback-site.sh`): point `current` back at the previous release (instant, nothing
     rebuilt), reload PHP, restart the workers, run the health check. Database migrations are not
     undone: say so. The failed release is kept for a while to look at, not deleted.
 17. **Turn on HTTPS** (done): Let's Encrypt with a DNS check first and automatic renewal. New:
@@ -187,17 +187,17 @@ Why this order:
       decrypt. Never a passphrase stored on the server (whoever breaks in could read every backup)
     - **restore drill** (`backup verify`): restore the file into a throwaway database on your laptop
       (Docker), compare tables and row counts. A backup that was never restored isn't proven.
-20. **Run Laravel commands** (new), from an allow-list only: `migrate`, `optimize`, `optimize:clear`,
+20. **Run Laravel commands** (done in v0.5: `artisan.sh`), from an allow-list only: `migrate`, `optimize`, `optimize:clear`,
     `config:cache`, `route:cache`, `view:cache`, `queue:restart`, `storage:link`, `down`, `up`.
     Never `tinker`, `db:wipe`, `migrate:fresh` or anything typed freely.
-21. **Workers and scheduler** (new): create, update or remove a site's workers and scheduler from
+21. **Workers and scheduler** (done in v0.5, native: `workers.sh`; Docker in v0.8): create, update or remove a site's workers and scheduler from
     the deploy plan (B-11), with a **process count** per worker (e.g. `queue:work` × 3). Native
     (decision 2, **Supervisor**): one Supervisor program per worker (`numprocs` = the process count),
     running as **the site's user**, restarted automatically if it crashes, with its log rotated
     (size limit); the scheduler is a `* * * * * php artisan schedule:run` cron line in the site
     user's crontab, its output written to a log the problem check reads. Docker: `queue`,
     `scheduler` (and `horizon` / `reverb`) services in the compose file.
-22. **Restart a service** (new): PHP-FPM, nginx, MySQL, Redis, Supervisor, a site's workers, or a
+22. **Restart a service** (done in v0.5: `restart-service.sh`; containers in v0.8): PHP-FPM, nginx, MySQL, Redis, Supervisor, a site's workers, or a
     site's containers.
 23. **Change a site's PHP version** (new; a server holds several versions, decision 1): install another
     PHP version if needed, then **first**
@@ -234,14 +234,14 @@ Why this order:
     name in one go** (offboarding; removal needs the key's comment typed back). Removing the key
     you are connected with, or the last key, is refused, so nobody locks themselves out. This
     replaces "offboarding means editing every server by hand".
-75. **Project linking** (new): a `.servio.json` in the Laravel project with the host alias and the
+75. **Project linking** (done in v0.5: `project-link.sh`): a `.servio.json` in the Laravel project with the host alias and the
     domain (no secrets, safe to commit), so "deploy" or "show the logs" inside that project
     folder just works. Claude still names the target and asks for your OK.
 76. **Alerts from the server** (new, opt-in per server): a systemd timer **on the server** checks
     disk, memory, failed services, workers, certificate expiry, backup age and whether each site
     answers, and posts problems to a Slack, Discord or Telegram webhook. Runs with nobody chatting.
     Limit: a server can't report that it is itself down; that needs an outside uptime service.
-77. **Suspend / resume a site** (new): nginx serves a "temporarily unavailable" page (503) without
+77. **Suspend / resume a site** (done in v0.5: `suspend-site.sh`): nginx serves a "temporarily unavailable" page (503) without
     touching the app, unlike `artisan down`, so it works even when the app itself is broken.
 79. **Push-to-deploy** (new, opt-in per site): a push to the site's branch deploys it, through a
     GitHub Actions workflow that connects with a **deploy-only SSH key**: in `authorized_keys` it is
@@ -326,8 +326,10 @@ Docker rules (in the skill and checked by the scripts):
 34. Read-only first, then say what will change before asking. (done)
 35. Claude never reads, prints or edits `.env` files or private keys; a hook blocks the obvious
     attempts. (done) **Scripts** may read only specific keys on the server, without printing
-    secrets: `DB_*` for backups and database setup, `QUEUE_CONNECTION` and `APP_DEBUG` (yes/no)
-    for checks. (new)
+    secrets: `DB_*` for backups and database setup, `APP_DEBUG` (yes/no) for checks. (new)
+    Done in v0.5: plain, non-secret values may be read and printed from a fixed allow-list in
+    `lib.sh` (`ENV_KEYS_ALLOWED`: `QUEUE_CONNECTION`, `DB_CONNECTION`, `CACHE_STORE`,
+    `SESSION_DRIVER`), read as the site's user, and only if the value is a plain word.
 36. Only the host aliases in your own `~/.ssh/config`; no keys, passwords or IPs in chat or repo. (done)
     New: `run.sh` sets `StrictHostKeyChecking=yes`. An unknown or **changed** server key stops with
     a clear message ("this server's identity changed: check before continuing"); never a silent

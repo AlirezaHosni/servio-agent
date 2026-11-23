@@ -30,12 +30,15 @@ main() {
     validate_public_domain "$domain"
     begin_change "$domain" "$@"
 
-    local web_root live http_config https_config token challenge got expires
+    local web_root live http_config https_config token challenge got expires names name
     step "Checking the site"
     require_root
     read_site_settings "$domain"
-    web_root="$(site_dir "$domain")/$SITE_WEB_DIR"
+    web_root="$SITE_ROOT"
     live="$LETSENCRYPT_DIR/live/$domain"
+    # The main domain, its extra names and the www redirect (domains.sh): all on one certificate.
+    names="$(certificate_names "$domain")"
+    for name in $names; do validate_public_domain "$name"; done
     lock_site "$domain"
     echo "OK: $(nginx_available "$domain") (web root $web_root, PHP $SITE_PHP)"
 
@@ -48,7 +51,9 @@ main() {
 
     if dry_run; then
         step "Where $domain points"
-        echo "  $domain points to: $(getent ahosts "$domain" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+        for name in $names; do
+            echo "  $name points to: $(getent ahosts "$name" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+        done
         echo "  this server is:    $(hostname -I)"
         echo "  (the real run checks this properly before asking Let's Encrypt)"
         step "certbot"
@@ -88,30 +93,37 @@ main() {
     fi
     echo "OK"
 
-    step "Checking that http://$domain reaches this server"
+    step "Checking that every name reaches this server: $names"
     # Done BEFORE asking Let's Encrypt: it allows only 5 failed checks per domain per hour, and
     # its error ("connection refused", "unauthorized") explains less than this does.
+    # Every name on the certificate is checked: one name that doesn't point here fails them all.
     token="servio-check-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     challenge="$ACME_ROOT/.well-known/acme-challenge/$token"
     add_exit_hook "rm -f '$challenge'"
     echo "$token" > "$challenge"
-    got="$(curl -fsS --max-time 15 "http://$domain/.well-known/acme-challenge/$token" 2>&1 || true)"
-    if [ "$got" != "$token" ]; then
-        echo "http://$domain doesn't reach this server yet, so Let's Encrypt couldn't check it either." >&2
-        echo "  curl said:        ${got:-nothing}" >&2
-        echo "  $domain points to: $(getent ahosts "$domain" | awk '{print $1}' | sort -u | tr '\n' ' ')" >&2
-        echo "  this server is:   $(hostname -I)" >&2
-        die_state "Add an A record for $domain with this server's IP, wait until DNS shows it, then try again."
-    fi
-    echo "OK: the domain points here."
+    for name in $names; do
+        got="$(curl -fsS --max-time 15 "http://$name/.well-known/acme-challenge/$token" 2>&1 || true)"
+        if [ "$got" != "$token" ]; then
+            echo "http://$name doesn't reach this server yet, so Let's Encrypt couldn't check it either." >&2
+            echo "  curl said:        ${got:-nothing}" >&2
+            echo "  $name points to: $(getent ahosts "$name" | awk '{print $1}' | sort -u | tr '\n' ' ')" >&2
+            echo "  this server is:   $(hostname -I)" >&2
+            die_state "Add an A record for $name with this server's IP, wait until DNS shows it, then try again (or remove that name: domains.sh)."
+        fi
+        echo "OK: $name points here."
+    done
 
     step "Requesting the certificate from Let's Encrypt"
     # certonly --webroot: get the certificate only; nginx is configured by lib.sh, not certbot.
     # --cert-name: a fixed folder name, /etc/letsencrypt/live/<domain>/ (no "-0001" copies).
     # --deploy-hook: saved with the certificate, so every future renewal reloads nginx too.
     # --register-unsafely-without-email: no personal data leaves the laptop; renewal is automatic.
+    # One -d per name (the main domain first). --expand: when names were added, replace the
+    # certificate with one covering all of them (otherwise --keep-until-expiring keeps the old).
+    local d_args=()
+    for name in $names; do d_args+=(-d "$name"); done
     certbot certonly --webroot -w "$ACME_ROOT" \
-        -d "$domain" --cert-name "$domain" \
+        "${d_args[@]}" --cert-name "$domain" --expand \
         --non-interactive --agree-tos --register-unsafely-without-email \
         --keep-until-expiring \
         --deploy-hook "systemctl reload nginx"

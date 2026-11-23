@@ -9,7 +9,7 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.4.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.5.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -28,7 +28,17 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "How many PHP workers fit on web1?" | `php-sizing.sh [domain]` | No |
 | "Provision web1 with PHP 8.4" | `provision-server.sh` | Yes: installs nginx, PHP-FPM, Composer, a firewall |
 | "Create shop.example.com on web1" | `create-site.sh` | Yes: site folder, nginx config, deploy key |
-| "Deploy shop.example.com from main" | `deploy-site.sh` | Yes: git fetch + checkout, composer, migrations |
+| "What does the shop project need?" | `project-check.sh <domain> [branch] [repo]` | No |
+| "Deploy shop.example.com from main" | `deploy-site.sh` | Yes: a new release folder (composer, npm build, migrations), an instant switch, a health check that switches back on failure, worker restart |
+| "Roll back shop.example.com" | `rollback-site.sh <domain> [release]` | Yes: switches back to an older release (instant; migrations are not undone) |
+| "Who deployed shop.example.com?" | `deploy-history.sh <domain> [count]` | No |
+| "Run 2 workers for the emails queue" / "Turn on the scheduler" | `workers.sh <domain> queue\|horizon\|reverb\|scheduler\|remove` | Yes: Supervisor programs / a cron line, as the site's user |
+| "Run the migrations" | `artisan.sh <domain> <command>` (allow-list) | Yes |
+| "Restart PHP 8.4" | `restart-service.sh <service>` | Yes: nginx and PHP are reloaded (no dropped requests) |
+| "Add shop.example.org" / "Redirect www" | `domains.sh <domain> add\|remove <name>` / `www on\|off` | Yes: nginx config (then issue-certificate.sh extends HTTPS) |
+| "Suspend shop.example.com" | `suspend-site.sh <domain> suspend\|resume` | Yes: nginx shows a 503 page, the app isn't touched |
+| "Did CI pass for what I'm deploying?" | `ci-status.sh <repo> <commit>` (on your laptop, needs `gh`) | No: reads GitHub's checks |
+| "Link this project to shop.example.com on web1" | `project-link.sh create\|show` (on your laptop) | Writes `.servio.json` in the project (no secrets) |
 | "Give shop.example.com HTTPS" | `issue-certificate.sh` | Yes: Let's Encrypt certificate, HTTPS nginx config |
 | "Delete shop.example.com" | `delete-site.sh` | Yes, and it can't be undone |
 
@@ -102,6 +112,8 @@ of these later; the plugin will then talk to Servio instead of SSHing directly.
 - Servers: Ubuntu 22.04 or 24.04 LTS; your SSH user is root or has **passwordless sudo**
 - You've connected to each server by hand once (so its host key is known): the scripts never
   answer SSH prompts
+- Optional: the GitHub CLI (`gh`, logged in with `gh auth login`) to see CI results before a
+  deploy (`ci-status.sh`, read-only)
 
 ## Install
 
@@ -130,6 +142,7 @@ plugin hook, so there the secrets rule is advice only.
 skills/server-ops/SKILL.md        when to use it, the rules, the workflows
 skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one script per action,
                                   job-status.sh / job-stop.sh for long jobs
+                                  ci-status.sh / project-link.sh run on your laptop, not the server
 runbooks/                         short notes: Problem, Cause, Fix, Commands (health.sh names them)
 hooks/hooks.json                  PreToolUse hook on Bash
 hooks/servio-guard.pl             the guard: allow / ask / deny (servio-guard.sh starts it)
@@ -161,9 +174,12 @@ a session with the plugin installed after changing the skill's description.
   `shop.example.com` → `s_shopexamplecom_3f2a1b` (`s_` + up to 16 letters/digits + 6 hex of
   the domain's SHA-256). One site can't read another's files or `.env`. Inventory shows each
   site's user
-- site: `/home/<user>/<domain>`, web root `/home/<user>/<domain>/<web-dir>`, its own temp folder
-  `/home/<user>/tmp`; homes are `750`, nginx (`www-data`) reads public files through each
-  site's group
+- site: `/home/<user>/<domain>` with **release folders** (v0.5): each deploy is
+  `releases/<time>-<commit>/` (git archive, no `.git`), `shared/.env` and `shared/storage/` are
+  linked into every release, `current` → the live release (switched in one atomic rename).
+  nginx's web root is `/home/<user>/<domain>/current/<web-dir>`. The last 5 releases are kept.
+  Its own temp folder `/home/<user>/tmp`; homes are `750`, nginx (`www-data`) reads public
+  files through each site's group
 - PHP-FPM: one pool per site, `/etc/php/<version>/fpm/pool.d/<user>.conf`, running as the site's
   user, socket `/run/php/php<version>-fpm-<user>.sock`, `pm = ondemand` (no memory while idle).
   A server can have several PHP versions; each site uses one

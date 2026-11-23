@@ -104,10 +104,13 @@ has updated.
 
 > Deploy shop.example.com from main, repository git@github.com:acme/shop.git
 
-After your OK, Claude fetches the branch onto the server, runs `composer install`, and reloads
-PHP. On the very first deploy you'll see:
+Claude first shows a dry run: the commits that would go live, what the project needs
+(PHP extensions, workers, a frontend build) and whether the server has it. After your OK it
+builds a new **release folder** while the old one keeps serving (`composer install`, `npm run
+build` if your project has one), switches to it in one step, checks the site answers (and
+switches back if it doesn't). On the very first deploy you'll see:
 
-> No .env file yet: skipped migrations and caching.
+> No .env yet (shared/.env): skipped migrations and caching.
 
 That's on purpose: **Claude never writes or reads `.env` files.** Create it yourself, as the
 site's user (inventory shows it, e.g. `s_shopexamplecom_3f2a1b`):
@@ -115,15 +118,50 @@ site's user (inventory shows it, e.g. `s_shopexamplecom_3f2a1b`):
 ```bash
 ssh web1
 U=s_shopexamplecom_3f2a1b                                   # the site's user
-sudo -u $U nano /home/$U/shop.example.com/.env              # paste your settings, save
-sudo -u $U php /home/$U/shop.example.com/artisan key:generate   # if APP_KEY is empty
+sudo -u $U nano /home/$U/shop.example.com/shared/.env       # paste your settings, save
+cd /home/$U/shop.example.com/current
+sudo -u $U php artisan key:generate                         # if APP_KEY is empty
 ```
 
 Then ask Claude to "fix permissions for shop.example.com" (it makes `.env` readable only by the
 site), and to deploy again: now migrations and `artisan optimize` run too.
 
 Later deploys are just "deploy shop.example.com": the repository and branch are remembered on
-the server. Want different deploy steps? Add `.servio/deploy.sh` to your repository.
+the server (in the live release). Want different deploy steps? Add `.servio/deploy.sh` to your
+repository. Visitors never see a half-updated site, and a deploy that breaks the site is
+switched back by itself. Migrations run before the switch and are not undone, so write them so
+the previous release can still run.
+
+### Queue workers and the scheduler
+
+The deploy's project check tells you what the code needs: which queues have no worker, and
+whether the scheduler runs. Then:
+
+> Set up the workers and the scheduler for shop.example.com.
+
+Claude shows the Supervisor program (and the cron line) it would write, then adds them after your
+OK. They run as the site's user, restart by themselves after every deploy, and log to
+`shared/storage/logs/`. "Run the migrations" or "clear the caches" work the same way, from a
+fixed list of artisan commands.
+
+### Something broke after a deploy?
+
+> Roll back shop.example.com.
+
+Claude shows the release it would go back to and the migrations that stay in the database (a
+rollback never undoes them), then switches back in an instant after your OK. "Who deployed
+shop.example.com?" lists past deploys, rollbacks and the releases on the server.
+
+### Link the project, check CI
+
+Inside your Laravel project folder:
+
+> Link this project to shop.example.com on web1.
+
+Claude writes `.servio.json` (host alias, domain, branch: no secrets). Commit it, and from then
+on "deploy this" in that folder knows the target; Claude still says it and asks first. With the
+GitHub CLI installed and logged in (`gh auth login`), the deploy's dry run also tells you
+whether CI passed for the commit that would go live.
 
 ## 7. HTTPS
 
@@ -132,6 +170,14 @@ the server. Want different deploy steps? Add `.servio/deploy.sh` to your reposit
 After your OK, Claude installs certbot, checks that `http://shop.example.com` really reaches
 this server (if not, it tells you what the DNS says and stops, without wasting a Let's
 Encrypt attempt), gets the certificate, and switches the site to HTTPS. Renewal is automatic.
+
+### More names, www, and suspending
+
+> Add shop.example.org to shop.example.com, and redirect www to it.
+
+Point the new names' DNS at the server first. If the site has HTTPS, Claude then reissues the
+certificate so it covers every name. "Suspend shop.example.com" shows visitors a "temporarily
+unavailable" page (the app isn't touched); "resume" brings it back.
 
 ## 8. Check it
 
