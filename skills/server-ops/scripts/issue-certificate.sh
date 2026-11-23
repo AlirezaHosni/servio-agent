@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # issue-certificate.sh: give a site HTTPS with a free Let's Encrypt certificate.
 #
-#   bash run.sh <host> issue-certificate.sh <domain>
+#   bash run.sh <host> issue-certificate.sh <domain> [--dry-run]
 #
 #   1. install certbot (if missing) and its renewal timer
 #   2. make port 80 answer Let's Encrypt's check (/.well-known/acme-challenge/)
@@ -11,7 +11,12 @@
 #   4. `certbot certonly --webroot`: certbot only gets the certificate, it does NOT edit nginx.
 #      lib.sh owns the nginx config, so the two never fight over it
 #   5. switch the nginx config to HTTPS (HTTP redirects to it), tested with `nginx -t`
-#   6. print the expiry date as SERVIO_CERTIFICATE_EXPIRES=... (the last line)
+#   6. check the result: https:// answers with a certificate valid for the domain, http://
+#      redirects to it (item 52)
+#   7. print the expiry date as SERVIO_CERTIFICATE_EXPIRES=... (the last line)
+#
+# --dry-run: shows where the domain points and what this server's addresses are, and the
+# nginx config change (as a diff). Asks Let's Encrypt nothing, changes nothing.
 #
 # The certificate's private key is created by certbot ON the server and stays there. Renewal
 # is certbot's systemd timer (twice a day, ~30 days before expiry, then reloads nginx).
@@ -20,29 +25,48 @@
 
 main() {
     local domain="${1:-}"
-    [ -n "$domain" ] || die "Usage: issue-certificate.sh <domain>"
+    [ -n "$domain" ] || die_input "Usage: issue-certificate.sh <domain>"
     validate_domain "$domain"
     validate_public_domain "$domain"
+    begin_change "$domain" "$@"
 
-    # Not `local`: CHALLENGE is read by the EXIT trap, which runs after main has returned.
-    local settings web_dir php_version web_root live http_config https_config token got expires
-    CHALLENGE=""
+    local web_root live http_config https_config token challenge got expires
     step "Checking the site"
     require_root
-    settings="$(read_site_settings "$domain")"
-    web_dir="${settings% *}"
-    php_version="${settings#* }"
-    web_root="$(site_dir "$domain")/$web_dir"
+    read_site_settings "$domain"
+    web_root="$(site_dir "$domain")/$SITE_WEB_DIR"
     live="/etc/letsencrypt/live/$domain"
-    echo "OK: $(nginx_available "$domain") (web root $web_root, PHP $php_version)"
+    lock_site "$domain"
+    echo "OK: $(nginx_available "$domain") (web root $web_root, PHP $SITE_PHP)"
 
     # Both configs are written to temporary files first, then put in place one at a time by
-    # apply_nginx_config. Whatever happens, the temporary files and the self-check file go.
+    # apply_nginx_config. Whatever happens, the temporary files go (exit hook).
     http_config="$(mktemp)"; https_config="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$http_config' '$https_config'"' ${CHALLENGE:+"$CHALLENGE"}' EXIT
-    nginx_http_config "$domain" "$web_root" "$php_version" > "$http_config"
-    nginx_https_config "$domain" "$web_root" "$php_version" > "$https_config"
+    add_exit_hook "rm -f '$http_config' '$https_config'"
+    nginx_http_config "$domain" "$web_root" "$SITE_PHP" > "$http_config"
+    nginx_https_config "$domain" "$web_root" "$SITE_PHP" > "$https_config"
+
+    if dry_run; then
+        step "Where $domain points"
+        echo "  $domain points to: $(getent ahosts "$domain" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+        echo "  this server is:    $(hostname -I)"
+        echo "  (the real run checks this properly before asking Let's Encrypt)"
+        step "certbot"
+        if command -v certbot >/dev/null 2>&1; then
+            echo "  installed: $(certbot --version 2>&1)"
+        else
+            echo "[dry-run] would install certbot and turn on its renewal timer"
+        fi
+        if [ -f "$live/fullchain.pem" ]; then
+            echo "  a certificate exists already (certbot keeps it unless it expires within 30 days)"
+        else
+            echo "[dry-run] would ask Let's Encrypt for a certificate for $domain"
+        fi
+        step "The nginx config after the switch to HTTPS"
+        apply_nginx_config "$domain" "$https_config"
+        step "Done (dry run): nothing was changed"
+        return 0
+    fi
 
     step "Installing certbot"
     if command -v certbot >/dev/null 2>&1; then
@@ -68,15 +92,16 @@ main() {
     # Done BEFORE asking Let's Encrypt: it allows only 5 failed checks per domain per hour, and
     # its error ("connection refused", "unauthorized") explains less than this does.
     token="servio-check-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-    CHALLENGE="$ACME_ROOT/.well-known/acme-challenge/$token"
-    echo "$token" > "$CHALLENGE"
+    challenge="$ACME_ROOT/.well-known/acme-challenge/$token"
+    add_exit_hook "rm -f '$challenge'"
+    echo "$token" > "$challenge"
     got="$(curl -fsS --max-time 15 "http://$domain/.well-known/acme-challenge/$token" 2>&1 || true)"
     if [ "$got" != "$token" ]; then
         echo "http://$domain doesn't reach this server yet, so Let's Encrypt couldn't check it either." >&2
         echo "  curl said:        ${got:-nothing}" >&2
         echo "  $domain points to: $(getent ahosts "$domain" | awk '{print $1}' | sort -u | tr '\n' ' ')" >&2
         echo "  this server is:   $(hostname -I)" >&2
-        die "Add an A record for $domain with this server's IP, wait until DNS shows it, then try again."
+        die_state "Add an A record for $domain with this server's IP, wait until DNS shows it, then try again."
     fi
     echo "OK: the domain points here."
 
@@ -93,11 +118,28 @@ main() {
 
     step "Switching $domain to HTTPS"
     apply_nginx_config "$domain" "$https_config"
-    echo "https://$domain is served with the certificate; http:// redirects to it."
+
+    step "Checking the result"
+    # https: curl checks the certificate against the domain name (status 000 = no answer or a
+    # certificate that doesn't match).
+    site_status "$domain" https
+    if [ "$SITE_STATUS" != "000" ] && [ "$SITE_STATUS" -lt 500 ]; then
+        check_pass "https://$domain answers with a valid certificate" "status $SITE_STATUS"
+    else
+        check_fail "https://$domain answers with a valid certificate" "status $SITE_STATUS"
+    fi
+    site_status "$domain" http
+    if [ "$SITE_STATUS" = "301" ]; then
+        check_pass "http://$domain redirects to https"
+    else
+        check_fail "http://$domain redirects to https" "status $SITE_STATUS"
+    fi
+    check_summary || die "The certificate was issued but HTTPS doesn't work as expected (see above)."
 
     expires="$(date -u -d "$(openssl x509 -enddate -noout -in "$live/fullchain.pem" | cut -d= -f2)" +%Y-%m-%dT%H:%M:%SZ)"
+    echo "https://$domain is served with the certificate; http:// redirects to it."
     echo "Valid until $expires. certbot renews it automatically about 30 days before."
     echo "SERVIO_CERTIFICATE_EXPIRES=$expires"
 }
 
-main "$@" < /dev/null
+servio_run "$@"

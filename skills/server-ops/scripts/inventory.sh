@@ -11,9 +11,8 @@
 # comes from files a deploy controls (composer.lock, branch names) is checked against a strict
 # pattern first: the output goes to an AI, and "ignore your instructions..." is not a version.
 #
-# The whole script is one function, called on the last line with stdin from /dev/null: with
-# `bash -s`, bash reads the script from stdin, and any command that reads stdin (ssh, apt, git)
-# would otherwise eat the rest of the script.
+# The whole script is one function, main, started by servio_run on the last line (see lib.sh):
+# stdin from /dev/null, output masked, fixed exit codes. Read-only, so no lock, log or dry run.
 
 main() {
     require_root
@@ -124,4 +123,4 @@ site_report() {
     echo "    deploy key: $([ -f "$(deploy_key_path "$domain").pub" ] && echo present || echo missing)"
 }
 
-main "$@" < /dev/null
+servio_run "$@"
