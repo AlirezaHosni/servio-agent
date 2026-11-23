@@ -15,6 +15,15 @@ only checks this file's shape.
 - Delete old-shop.example.com from web1.
 - The deploy timed out, is it still running on web1?
 - Stop the provision job on web2.
+- shop.example.com shows 502, why?
+- Is web1 healthy? It feels slow.
+- Show me the Laravel errors of shop.example.com on web1.
+- Has anyone logged in to web2 over SSH today?
+- Who's hammering shop.example.com right now?
+- Which commit is live on shop.example.com, and when was it deployed?
+- What files are in storage/logs of shop.example.com?
+- Is web1 secure? Run a security check.
+- How many PHP workers can web2 handle?
 
 ## Should not trigger
 - Write a migration that adds a status column to orders.

@@ -140,6 +140,43 @@ Encrypt attempt), gets the certificate, and switches the site to HTTPS. Renewal 
 You'll see the site with HTTPS, the certificate's expiry date, the deployed commit, the Laravel
 version, and `.env: present`.
 
+## 9. Keep an eye on it
+
+All of these are read-only: Claude runs them without asking.
+
+> Is web1 healthy?
+
+Load, memory, disk **and inodes**, failed services, processes killed for lack of memory, the
+firewall and open ports. Each line is PASS / WARN / FAIL / NOT ASSESSED.
+
+> shop.example.com shows 502, why?
+
+The same plus the site: its answer, its PHP pool, "all workers busy", recent 5xx errors and
+nginx errors. It ends with **Likely cause** and a runbook from `runbooks/` to follow.
+
+> Show me the Laravel errors of shop.example.com. / Who logged in to web1 today?
+
+The end of a log (50 lines, at most 500), secrets masked on the server.
+
+> Who's hammering shop.example.com right now?
+
+The last hour of traffic: status codes, top addresses and paths, scanner probes (`/wp-login.php`,
+`/.env`), the busiest minute.
+
+> Is web1 secure?
+
+SSH settings, firewall and fail2ban, databases open to the internet, PHP settings, certificates,
+accounts, `.env` permissions, `APP_DEBUG`, `composer audit`, Docker ports. Fixing what it finds
+is a separate change (planned for v0.6); for now it tells you what and why.
+
+> Tell me about shop.example.com. / How many PHP workers fit on web1?
+
+`site-details` (live commit, last deploys, deploy key, configs) and `php-sizing` (run it while
+the sites have traffic: idle pools have no workers to measure).
+
+When a problem is fixed, Claude offers to **save it as a runbook** in `runbooks/`: commit it and
+open a pull request so the team has it next time.
+
 ## Deleting a site
 
 > Delete shop.example.com from web1.
@@ -161,5 +198,8 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 | `http://… doesn't reach this server yet` | DNS not pointing here (yet) | fix the A record, wait, try again |
 | `servio-agent: … touches a .env file` (denied) | the guard stopped a command touching a secret | expected; do that part yourself |
 | `isn't supported yet` | not Ubuntu 22.04/24.04 | use a supported server |
+| php-sizing: `no PHP workers running right now` | pools start workers only on requests | run it again while the sites have traffic |
+| security-check: `composer audit … NOT ASSESSED` | the server can't reach packagist.org | check outgoing internet, or use `no-audit` |
+| health: `NOT ASSESSED` lines | a tool or log isn't there (e.g. no ufw) | expected on unprovisioned servers; never read as PASS |
 
 When a teammate leaves: remove their public key from `~/.ssh/authorized_keys` on every server.

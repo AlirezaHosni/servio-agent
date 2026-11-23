@@ -1,14 +1,15 @@
 # servio-agent
 
 A Claude Code plugin that does Ploi-like server work over SSH, straight from the agent app:
-list what runs on a server, provision a fresh Ubuntu server, create a Laravel site, deploy it
-from git, give it HTTPS, and delete it. There's no panel in between: Claude runs a small set of
+list what runs on a server, check its health and security, read logs, find out why a site is
+down, provision a fresh Ubuntu server, create a Laravel site, deploy it from git, give it HTTPS,
+and delete it. There's no panel in between: Claude runs a small set of
 reviewed bash scripts on your servers through your own SSH setup.
 
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.3.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.4.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -18,6 +19,13 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | Ask Claude… | Script | Changes the server? |
 |---|---|---|
 | "What's running on web1?" | `inventory.sh` | No (read-only) |
+| "Is web1 healthy?" / "Why is shop.example.com down?" | `health.sh [domain]` | No |
+| "Show the Laravel errors of shop.example.com" / "Who logged in to web1?" | `logs.sh` | No |
+| "Who's hammering shop.example.com?" | `traffic.sh <domain> [minutes]` | No |
+| "Tell me about shop.example.com" / "Show its deploy key" | `site-details.sh <domain>` | No |
+| "What's in storage/logs?" | `site-files.sh <domain> [folder] [depth]` | No (names only, never contents) |
+| "Is web1 secure?" | `security-check.sh [no-audit]` | No |
+| "How many PHP workers fit on web1?" | `php-sizing.sh [domain]` | No |
 | "Provision web1 with PHP 8.4" | `provision-server.sh` | Yes: installs nginx, PHP-FPM, Composer, a firewall |
 | "Create shop.example.com on web1" | `create-site.sh` | Yes: site folder, nginx config, deploy key |
 | "Deploy shop.example.com from main" | `deploy-site.sh` | Yes: git fetch + checkout, composer, migrations |
@@ -25,10 +33,13 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "Delete shop.example.com" | `delete-site.sh` | Yes, and it can't be undone |
 
 Inventory shows per site: web root, PHP version, HTTPS and certificate expiry, the deployed
-commit and branch, the Laravel version (from `composer.lock`) and whether a `.env` file exists.
+commit and branch, the Laravel version (from `composer.lock`) and whether a `.env` file exists,
+and ends with a **Problems** list (certificates expiring soon, a pool not running, sites never
+deployed, failed services, a full disk). `health.sh` ends with **Likely cause** and names a
+runbook from `runbooks/`.
 
 **It can't** (yet): databases, queue workers, cron jobs, zero-downtime deploys, rollbacks,
-metrics, non-Ubuntu servers or Ubuntu 26.04. It doesn't edit `.env` files, ever: you do that.
+restarting services, metrics over time, non-Ubuntu servers or Ubuntu 26.04. It doesn't edit `.env` files, ever: you do that.
 
 ## How it stays safe
 
@@ -119,6 +130,7 @@ plugin hook, so there the secrets rule is advice only.
 skills/server-ops/SKILL.md        when to use it, the rules, the workflows
 skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one script per action,
                                   job-status.sh / job-stop.sh for long jobs
+runbooks/                         short notes: Problem, Cause, Fix, Commands (health.sh names them)
 hooks/hooks.json                  PreToolUse hook on Bash
 hooks/servio-guard.pl             the guard: allow / ask / deny (servio-guard.sh starts it)
 tests/                            local tests (no server needed)

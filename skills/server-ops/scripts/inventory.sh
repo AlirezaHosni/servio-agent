@@ -7,6 +7,10 @@
 # /etc/nginx/sites-enabled: web root, PHP version, HTTPS certificate expiry, deployed git
 # commit and branch, Laravel version (from composer.lock) and whether a .env file EXISTS.
 #
+# Ends with "Problems" (item 3): certificates expiring within 14 days, a PHP pool that isn't
+# running, a missing site user, a Laravel site without .env, sites never deployed, failed services,
+# a disk 90%+ full. For the details and a likely cause: health.sh.
+#
 # Never reads .env (only `[ -f ]` checks that it's there) or any key. Everything printed that
 # comes from files a deploy controls (composer.lock, branch names) is checked against a strict
 # pattern first: the output goes to an AI, and "ignore your instructions..." is not a version.
@@ -45,7 +49,29 @@ main() {
         echo "firewall:  $(ufw status | head -n 1)"
     fi
 
+    local failed disk_pct
+    failed="$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'         | grep -E '^[A-Za-z0-9@._:-]{1,100}$' | tr '
+' ' ' || true)"
+    [ -z "$failed" ] || problem "server: failed services: ${failed% }"
+    disk_pct="$(df -P / | awk 'NR==2 {sub(/%/, "", $5); print $5}')"
+    [[ "$disk_pct" =~ ^[0-9]+$ ]] && [ "$disk_pct" -ge 90 ] && problem "server: disk / is $disk_pct% full"
+
     sites_report
+    problems_report
+}
+
+# Problems found along the way, printed together at the end (item 3).
+PROBLEMS=()
+problem() { PROBLEMS+=("$1"); }
+problems_report() {
+    step "Problems"
+    if [ "${#PROBLEMS[@]}" -eq 0 ]; then
+        echo "None found."
+    else
+        printf -- '- %s
+' "${PROBLEMS[@]}"
+        echo "(details and likely cause: health.sh [domain])"
+    fi
 }
 
 # Every site in sites-enabled. A function of its own so tests can run it on a fake server folder
@@ -77,7 +103,7 @@ sites_report() {
 }
 
 site_report() {
-    local domain="$1" file managed root web_root php cert expires dir commit branch laravel env_file user user_state pool
+    local domain="$1" file managed root web_root php cert expires days dir commit branch laravel env_file user user_state pool
 
     file="$(nginx_available "$domain")"
     [ -f "$file" ] || file="$(nginx_enabled "$domain")"
@@ -104,6 +130,9 @@ site_report() {
     if [ -f "$cert" ]; then
         # The certificate is public (any browser gets it); its private key is never touched.
         expires="$(date -u -d "$(openssl x509 -enddate -noout -in "$cert" | cut -d= -f2)" +%Y-%m-%d)"
+        days="$(( ($(date -u -d "$expires" +%s) - $(date -u +%s)) / 86400 ))"
+        if [ "$days" -lt 0 ]; then problem "$domain: certificate EXPIRED on $expires"
+        elif [ "$days" -lt 14 ]; then problem "$domain: certificate expires in $days days ($expires): is renewal working?"; fi
         if grep -q "listen 443" "$file"; then
             expires="HTTPS, certificate valid until $expires"
         else
@@ -128,6 +157,13 @@ site_report() {
         [[ "$laravel" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z.]{1,20})?$ ]] && laravel="${laravel#v}" || laravel="not a Laravel app (or unknown)"
     fi
     [ -f "$dir/.env" ] && env_file="present"
+
+    if [ "$managed" = "yes" ]; then
+        [ "$user_state" = "$user" ] || problem "$domain: no site user $user (made before v0.3, or half deleted?)"
+        [[ "$pool" != *"NOT running"* ]] || problem "$domain: its PHP $php pool is configured but NOT running"
+        [ "$commit" != "not deployed" ] || problem "$domain: never deployed"
+    fi
+    [[ "$laravel" =~ ^[0-9] && "$env_file" = "missing" ]] && problem "$domain: a Laravel app without .env"
 
     echo
     echo "- $domain"

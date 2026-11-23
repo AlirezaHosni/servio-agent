@@ -21,13 +21,13 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 | **v0.1.1** | Prove v0.1 on a real server | none new: run v0.1 (inventory, provision, create site, deploy, SSL, delete) on a throwaway Ubuntu 22.04 **and** 24.04 VPS with a real domain; fix what breaks. Quick wins: 36 (strict host keys), 44 (never wait for input) |
 | **v0.2** ✅ built (not yet run on a real server) | Safety base | **Scripts:** 40 action log · 45 long jobs · 48 dry run · 49 four results · 50 exit codes · 51 safe file changes · 52 check the result · 68 masking · 69 site lock. **Hook:** 39 proof-based hook · 43 secrets backstop. **Rules:** 38 no blind re-run · 54 declare scope · 70 approval scope · 84 files outside Claude's context. **Quality:** 55 skill checks · 56 fixture tests · 66 basic CI |
 | **v0.3** ✅ built (not yet run on a real server; Servio panel still to do) | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
-| **v0.4** | See everything (read-only) | 2 all servers · 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 61 TLS from outside · 62 nginx review · 78 server logs · 46–47 runbooks |
+| **v0.4** ✅ built (not yet run on a real server) | See everything (read-only) | 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 78 server logs · 46 runbooks. **Skill text only, no script:** 2 all servers (inventory on each alias, merged) · 47 save as runbook |
 | **v0.5** | Laravel deploys | 11–12 project check · 8 what would deploy · 15 deploy with release folders, health check, npm build, worker restart · 16 rollback · 72 deploy history · 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · 75 project linking · 77 suspend / resume · 73 redirects · 14 domains added later · 17 HSTS and certificate check |
 | **v0.6** | Data and server care | 18 database setup · 19 database backup to the laptop · 64 file backup · 32 restore (destructive) · 23 change PHP version · 59 apply PHP-FPM sizing · 24 firewall · 25 package updates · 53 harden a server · 74 reboot · 76 alerts |
 | **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
 | **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
 | **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
-| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` |
+| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) |
 
 Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
 size needs it; anything mainly useful for big teams is asked about first, not built by default.
@@ -51,20 +51,20 @@ Why this order:
 1. **Server inventory** (done): OS, nginx, PHP and certbot status. For every site: PHP version,
    HTTPS and certificate expiry, deployed commit and branch, Laravel version, whether a `.env`
    exists (never its contents). New: show each site's mode (native or Docker).
-2. **All servers summary** (partial): run the inventory on every host alias you name and give one
+2. **All servers summary** (done in v0.4): run the inventory on every host alias you name and give one
    overview of all servers and sites.
-3. **Problem check** (partial): certificates expiring soon, missing `.env`, sites never deployed,
+3. **Problem check** (done in v0.4): certificates expiring soon, missing `.env`, sites never deployed,
    services or workers that are down, containers that keep restarting.
-4. **Server health** (partial): disk, memory, load, failed services (`systemctl --failed`) and, on
+4. **Server health** (done in v0.4): disk, memory, load, failed services (`systemctl --failed`) and, on
    Docker servers, container status and disk used by images.
-5. **Read logs** (new): the end of a site's nginx, Laravel and worker logs (or `docker compose
+5. **Read logs** (done in v0.4): the end of a site's nginx, Laravel and worker logs (or `docker compose
    logs`), a limited number of lines. Secrets are redacted **on the server, before the output is
    sent**: private keys, JWTs, API keys (`sk-…`, `AKIA…`), `user:pass@` in URLs and
    `password=…`-style values. It has to happen there: a Claude Code hook can't change a
    command's output after it ran.
-6. **Site details** (partial): repository, branch, last deploy time, the deploy key's public half,
+6. **Site details** (done in v0.4): repository, branch, last deploy time, the deploy key's public half,
    the nginx config in use, workers and their state.
-7. **Security check** (new): each item is PASS / WARN / FAIL / NOT ASSESSED (F-49), with a
+7. **Security check** (done in v0.4): each item is PASS / WARN / FAIL / NOT ASSESSED (F-49), with a
    summary:
    - updates: security updates pending, automatic security updates on
    - SSH (from `sshd -T`, the settings sshd really uses): root login, password and
@@ -80,23 +80,23 @@ Why this order:
    - Docker: ports published to the internet instead of `127.0.0.1`
 8. **What would deploy** (new): fetch the branch and list the commits between the live one and the
    branch, plus whether their GitHub checks (CI) passed, before you approve a deploy.
-9. **Site files** (new): list the folders and files of a site (names, sizes, owners). It never
+9. **Site files** (done in v0.4): list the folders and files of a site (names, sizes, owners). It never
    shows file contents. `.env` and keys are left out of the listing.
-10. **Firewall status** (new): UFW rules and the ports that are actually open.
-57. **Why is my site down?** (new): one snapshot of load, memory, disk **and inodes** (a disk can be
+10. **Firewall status** (done in v0.4): UFW rules and the ports that are actually open.
+57. **Why is my site down?** (done in v0.4): one snapshot of load, memory, disk **and inodes** (a disk can be
     "full" with free space left), **OOM kills** in the kernel log, failed services, PHP-FPM
     warnings (`max_children reached`) and the site's recent 5xx errors, then a runbook for the
     match: 502 (often PHP-FPM killed for memory), disk full, out of memory, high load.
-58. **PHP-FPM sizing** (new): measure the real memory of the site's PHP processes (the 90th
+58. **PHP-FPM sizing** (done in v0.4): measure the real memory of the site's PHP processes (the 90th
     percentile, not the average: heavy requests cause the crashes), keep memory aside for MySQL
     and Redis, and recommend `pm.max_children`. Warns when the current setting can use more RAM
     than the server has. Applying it is C-59.
-60. **Traffic summary** (new): from the access logs, a limited time window: status codes, top IPs
+60. **Traffic summary** (done in v0.4): from the access logs, a limited time window: status codes, top IPs
     and paths, 5xx and 404 counts, the busiest minute, scanner probes (`/wp-login.php`, `/.env`)
     and the slowest pages (needs the log format from C-14).
 61. **TLS check from outside** (new, runs on your laptop): what visitors see: expiry, every name
     on the certificate (`www` too), the full chain, no TLS 1.0/1.1.
-78. **Server logs** (new): recent SSH logins and failed attempts (`auth.log`), syslog and the last
+78. **Server logs** (done in v0.4): recent SSH logins and failed attempts (`auth.log`), syslog and the last
     logins, a limited number of lines, secrets masked (68).
 72. **Deploy history** (new): a site's past deploys and rollbacks (time, commit, who, result,
     duration), from the releases and the action log (40); one deploy's output can be read again.
@@ -426,12 +426,12 @@ Docker rules (in the skill and checked by the scripts):
 
 ## G. Team knowledge (new)
 
-46. **Runbooks** (new): after a problem is fixed **and verified**, Claude writes a short note to
+46. **Runbooks** (done in v0.4): after a problem is fixed **and verified**, Claude writes a short note to
     `runbooks/<slug>.md` in this repo: Problem, Cause, Fix, Commands (only what happened in the
     session; no secrets, IPs or customer data). Notes reach the team through git (a pull request,
     reviewed like code). Before troubleshooting, the skill tells Claude to search `runbooks/` first.
     Plain search (grep), no vector database: at our size that's enough.
-47. **Save a session as a runbook or skill** (new): "save this as a runbook" turns a successful
+47. **Save a session as a runbook or skill** (done in v0.4: the runbook part, as skill text; a draft script from a session is later): "save this as a runbook" turns a successful
     session into a note (46) or, for a repeatable procedure, a draft script + workflow for review.
 
 ## H. Setup and docs
