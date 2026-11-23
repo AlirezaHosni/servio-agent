@@ -21,9 +21,14 @@ set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$SCRIPTS_DIR/../../../.claude-plugin/plugin.json"
-ALLOWED="inventory.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh project-check.sh deploy-history.sh provision-server.sh create-site.sh deploy-site.sh rollback-site.sh workers.sh artisan.sh restart-service.sh domains.sh suspend-site.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-status.sh job-stop.sh"
+ALLOWED="inventory.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh project-check.sh deploy-history.sh provision-server.sh create-site.sh deploy-site.sh rollback-site.sh workers.sh artisan.sh restart-service.sh domains.sh suspend-site.sh database.sh backup-db.sh backup-files.sh restore-db.sh pool-size.sh change-php.sh updates.sh harden.sh reboot.sh alerts.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-status.sh job-stop.sh"
 # Long scripts run as a job on the server (item 45): a dropped connection doesn't stop them.
-LONG="provision-server.sh deploy-site.sh issue-certificate.sh"
+LONG="provision-server.sh deploy-site.sh issue-certificate.sh updates.sh"
+# Scripts whose stdout is data (encrypted backups), not messages: only backup.sh runs them.
+STREAM="backup-db.sh backup-files.sh"
+# Scripts (or script:action) that READ data after themselves on the stream: restore-db.sh (only
+# restore.sh runs it) and alerts.sh webhook (only alert-webhook.sh runs it).
+STREAM_IN="restore-db.sh alerts.sh:webhook"
 
 usage() {
     echo "Usage: bash run.sh <host-alias> <script> [args...] [--dry-run] [--detach]" >&2
@@ -58,6 +63,39 @@ case " $ALLOWED " in
     *" $SCRIPT "*) ;;
     *) echo "Unknown script '$SCRIPT'." >&2; usage ;;
 esac
+
+# A reboot takes every site on the server down: the user types the host alias back, and only
+# run.sh knows which alias it's about to connect to, so the check is here.
+if [ "$SCRIPT" = "reboot.sh" ] && [ "${1:-}" = "now" ] && [ "${2:-}" != "$HOST" ]; then
+    echo "REFUSED: to reboot, type the host alias back exactly ('${2:-}' isn't '$HOST'). Nothing was run." >&2
+    exit 4
+fi
+
+# Backup scripts write encrypted DATA to stdout: only backup.sh runs them, sending stdout into a
+# file. Run any other way, the data would land in the terminal (and in Claude's context).
+if [[ " $STREAM " == *" $SCRIPT "* ]] && [ "${SERVIO_STREAM_TO_FILE:-}" != "1" ]; then
+    echo "$SCRIPT is run by backup.sh (it saves the encrypted backup to a file on your laptop): bash backup.sh $HOST <domain> db|files" >&2
+    exit 2
+fi
+if [[ " $STREAM " == *" $SCRIPT "* ]] && [ -t 1 ]; then
+    echo "Refusing to write a backup to a terminal." >&2
+    exit 2
+fi
+# Restore scripts READ data that follows them on the same SSH stream: only restore.sh sends it
+# (decrypted on the laptop, piped in). A dry run sends no data.
+FEED=0
+if [[ " $STREAM_IN " == *" $SCRIPT "* || " $STREAM_IN " == *" $SCRIPT:${1:-} "* ]] && [ "$DRY" -eq 0 ]; then
+    if [ "${SERVIO_STREAM_FROM_FILE:-}" != "1" ]; then
+        if [ "$SCRIPT" = alerts.sh ]; then
+            echo "alerts.sh webhook is run by alert-webhook.sh (it sends the URL from a file, never the chat): bash alert-webhook.sh $HOST" >&2
+        else
+            echo "$SCRIPT is run by restore.sh (it sends the backup): bash restore.sh $HOST <domain> <backup file> ..." >&2
+        fi
+        exit 2
+    fi
+    [ ! -t 0 ] || { echo "Refusing: no data on stdin." >&2; exit 2; }
+    FEED=1
+fi
 
 # ssh joins the arguments into ONE string that the server's shell splits again, so a space or
 # a ";" in an argument would become a second word or a second command ON THE SERVER. Allow only
@@ -135,7 +173,9 @@ payload() {
 }
 
 set +e
-payload | ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+# FEED: the data (run.sh's own stdin) follows the script on the same stream; the script's last
+# line (servio_run_input) hands it to main.
+{ payload; [ "$FEED" -eq 0 ] || cat; } | ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
     "$HOST" 'sudo -n bash -s' -- "$@" 2>"$SSH_ERR"
 rc=$?
 set -e

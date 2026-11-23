@@ -14,7 +14,7 @@
 #   3. the budget: how many workers fit, against the sum of every pool's pm.max_children
 #
 # Then a recommendation for each pool (or the one site): WARN when the pools together can use
-# more memory than there is. Applying a new value is item 59 (v0.6); this only reports.
+# more memory than there is. pool-size.sh applies a new value; this only reports.
 #
 # pm = ondemand pools have no workers when idle: measure while the sites have traffic. With fewer
 # than 3 workers of a pool running, the server-wide figure is used for it.
@@ -110,7 +110,7 @@ sizing_report() {
         fi
     done <<< "$limits"
     echo
-    echo "Applying a new pm.max_children is a change (item 59, v0.6). Before raising it, check"
+    echo "Applying a new value: pool-size.sh <domain> <max-children> (a change). Before raising it, check"
     echo "health.sh <domain> for 'all workers busy': if workers are never all busy, more won't help."
 }
 

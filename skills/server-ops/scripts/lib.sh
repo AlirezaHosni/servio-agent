@@ -760,14 +760,29 @@ apply_nginx_config() {
 #     nothing of any other site
 #   - its own socket; nginx (www-data) may talk to it (listen.owner / listen.group)
 #   - pm = ondemand: no PHP process runs until a request comes, and idle ones stop after 10 s,
-#     so many small sites cost almost no memory. pm.max_children caps it (sizing: v0.6)
+#     so many small sites cost almost no memory. pm.max_children caps it (pool-size.sh)
 #   - its own temp folder for uploads, temp files and sessions, never a shared /tmp
 #   - security.limit_extensions: only .php files are ever executed
 # ---------------------------------------------------------------------------------------------
+# pm.max_children: POOL_MAX_CHILDREN when a script sets it (pool-size.sh), else what the site's
+# pool has now (in ANY PHP version: changing the version keeps it), else 5. So re-running
+# create-site never resets a size someone chose.
+POOL_MAX_CHILDREN=""
+current_max_children() {
+    local v n
+    for v in $PHP_VERSIONS; do
+        # `|| true`: no pool for this version is normal (sed then fails, and set -e would stop here).
+        n="$(sed -n 's/^pm\.max_children = \([0-9]*\)$/\1/p' "$(pool_file "$1" "$v")" 2>/dev/null | head -n 1 || true)"
+        if [[ "$n" =~ ^[1-9][0-9]{0,2}$ ]]; then echo "$n"; return 0; fi
+    done
+    echo 5
+}
+
 php_pool_config() {
-    local user home
+    local user home max_children
     user="$(site_user "$1")"
     home="$(site_home "$1")"
+    max_children="${POOL_MAX_CHILDREN:-$(current_max_children "$1")}"
     cat <<POOL
 ; $MANAGED_HEADER. The PHP-FPM pool of $1. Changes made by hand are overwritten.
 [$user]
@@ -779,7 +794,7 @@ listen.group = www-data
 listen.mode = 0660
 
 pm = ondemand
-pm.max_children = 5
+pm.max_children = $max_children
 pm.process_idle_timeout = 10s
 pm.max_requests = 500
 
@@ -835,7 +850,7 @@ site_pool_versions() {
 SUPERVISOR_DIR="/etc/supervisor/conf.d"
 
 # The non-secret .env keys a script may read (rule 35). Values are checked: plain words only.
-ENV_KEYS_ALLOWED="QUEUE_CONNECTION DB_CONNECTION CACHE_STORE SESSION_DRIVER"
+ENV_KEYS_ALLOWED="QUEUE_CONNECTION DB_CONNECTION CACHE_STORE SESSION_DRIVER DB_DATABASE DB_USERNAME"
 
 # git as the site's user, with the site's deploy key (only exported variables reach runuser).
 site_git_env() {
@@ -852,7 +867,34 @@ env_value() {
     [ -f "$file" ] && [ ! -L "$file" ] || return 0
     v="$(runuser -u "$user" -- grep -E "^\s*$key\s*=" "$file" 2>/dev/null | tail -n 1 \
         | sed -E 's/^[^=]*=\s*//; s/\s+#.*$//; s/\s+$//; s/^["'\'']//; s/["'\'']$//' || true)"
-    [[ "$v" =~ ^[a-z0-9_-]{1,20}$ ]] && ENV_VALUE="$v"
+    [[ "$v" =~ ^[a-z0-9_-]{1,64}$ ]] && ENV_VALUE="$v"
+    return 0
+}
+
+# env_set <domain> <KEY=value lines on stdin>: set those keys in the site's shared/.env, keep every
+# other line as it is. For values the SERVER made (a generated password): they're never printed,
+# never on a command line (only stdin), and the file is never shown as a diff, not even in a dry
+# run (write_file would). Written next to the old one, then renamed: owner the site user, 600.
+env_set() {
+    local domain="$1" env user new
+    env="$(site_env "$domain")"; user="$(site_user "$domain")"
+    [ ! -L "$env" ] || die_refused "$env is a symlink: not writing secrets through it."
+    new="$(mktemp "$(dirname "$env")/.env.servio-new.XXXXXX")"
+    add_exit_hook "rm -f '$new'"
+    chmod 600 "$new"
+    # perl: the new KEY=value lines (stdin) replace the same keys in the old file, in place;
+    # keys that weren't there are added at the end. Values aren't interpreted (no shell).
+    perl -e '
+        my ($old) = @ARGV; my (@set, %new);
+        while (my $l = <STDIN>) { chomp $l; next unless $l =~ /^([A-Z][A-Z0-9_]*)=/; push @set, $1 unless exists $new{$1}; $new{$1} = $l; }
+        my @out; my %done;
+        if (open my $fh, "<", $old) { while (my $l = <$fh>) { chomp $l;
+            if ($l =~ /^\s*([A-Z][A-Z0-9_]*)\s*=/ && exists $new{$1}) { push @out, $new{$1} unless $done{$1}++; } else { push @out, $l } } }
+        for (@set) { push @out, $new{$_} unless $done{$_} }
+        print "$_\n" for @out;
+    ' "$env" > "$new"
+    chown "$user:$user" "$new"
+    mv -f "$new" "$env"
     return 0
 }
 
@@ -1362,6 +1404,36 @@ servio_launch_job() {
 # The { ...; } runs in a subshell (it is part of a pipe), so the traps are set INSIDE it:
 # a subshell doesn't inherit the parent's EXIT trap.
 # ---------------------------------------------------------------------------------------------
+# servio_run_stream: for scripts whose stdout is DATA (backups): stdout goes out untouched (it is
+# already encrypted with age, so there is nothing to mask, and masking would corrupt binary),
+# every message goes to stderr, which IS masked. Only backup.sh on the laptop runs these, with
+# stdout going into a file, never into the chat (run.sh refuses them otherwise).
+say() { echo "$*" >&2; }
+servio_run_stream() {
+    exec 2> >(mask_output >&2)
+    trap run_exit_hooks EXIT
+    trap 'on_error $? "$BASH_COMMAND" >&2' ERR
+    main "$@" < /dev/null
+}
+
+# servio_run_input: like servio_run, but main's stdin is DATA that follows the script on the same
+# SSH stream (restore: the decrypted dump, sent by restore.sh on the laptop). bash reads a script
+# from a pipe one byte at a time, so everything after this line is still there for main to read.
+# The output is masked as usual. MUST be the very last line of the script.
+servio_run_input() {
+    local args=() arg
+    for arg in "$@"; do
+        if [ "$arg" = "--dry-run" ]; then DRY_RUN=1; else args+=("$arg"); fi
+    done
+    {
+        trap run_exit_hooks EXIT
+        trap 'on_error $? "$BASH_COMMAND"' ERR
+        dry_run && echo "DRY RUN: nothing on the server will be changed."
+        main "${args[@]+"${args[@]}"}"
+    } 2>&1 | mask_output
+    exit "${PIPESTATUS[0]}"
+}
+
 servio_run() {
     local args=() arg
     for arg in "$@"; do

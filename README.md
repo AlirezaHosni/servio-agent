@@ -9,7 +9,7 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.5.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.6.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -26,7 +26,7 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "What's in storage/logs?" | `site-files.sh <domain> [folder] [depth]` | No (names only, never contents) |
 | "Is web1 secure?" | `security-check.sh [no-audit]` | No |
 | "How many PHP workers fit on web1?" | `php-sizing.sh [domain]` | No |
-| "Provision web1 with PHP 8.4" | `provision-server.sh` | Yes: installs nginx, PHP-FPM, Composer, a firewall |
+| "Provision web1 with PHP 8.4" | `provision-server.sh <php> [more] [mysql] [redis]` | Yes: installs nginx, PHP-FPM, Composer, Node.js, a firewall; MySQL 8 and Redis when asked |
 | "Create shop.example.com on web1" | `create-site.sh` | Yes: site folder, nginx config, deploy key |
 | "What does the shop project need?" | `project-check.sh <domain> [branch] [repo]` | No |
 | "Deploy shop.example.com from main" | `deploy-site.sh` | Yes: a new release folder (composer, npm build, migrations), an instant switch, a health check that switches back on failure, worker restart |
@@ -39,7 +39,17 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "Suspend shop.example.com" | `suspend-site.sh <domain> suspend\|resume` | Yes: nginx shows a 503 page, the app isn't touched |
 | "Did CI pass for what I'm deploying?" | `ci-status.sh <repo> <commit>` (on your laptop, needs `gh`) | No: reads GitHub's checks |
 | "Link this project to shop.example.com on web1" | `project-link.sh create\|show` (on your laptop) | Writes `.servio.json` in the project (no secrets) |
+| "Create a database for shop.example.com" | `database.sh <domain> create` | Yes: MySQL database + user, password made on the server and written to `shared/.env` (never shown) |
+| "Back up shop.example.com" | `backup.sh <host> <domain> db\|files` (on your laptop) | No: dumps or archives on the server, encrypted with age, saved to `~/ServioBackups/` (7 daily, 4 weekly, 3 monthly) |
+| "Restore yesterday's backup of shop.example.com" | `restore.sh <host> <domain> <file> new\|live <typed-domain>` (on your laptop) | `new`: a separate database; `live`: replaces the data (fresh backup first, atomic swap, typed domain) |
+| "Move shop.example.com to PHP 8.5" | `change-php.sh <domain> <version>` | Yes: checks composer requirements first, switches pool, nginx, workers; switches back on failure |
+| "Give it 10 PHP workers" | `pool-size.sh <domain> <max-children>` | Yes: the pool's `pm.max_children` |
+| "Update web1" / "Turn on security updates" | `updates.sh upgrade\|auto` | Yes: apt upgrade (keeps configs, checks services); daily security updates, no auto reboot |
+| "Harden web2" | `harden.sh ssh\|confirm\|fail2ban\|php` | Yes: key-only SSH with an automatic undo until confirmed, fail2ban, safe PHP settings |
+| "Reboot web1" | `reboot.sh now <typed-host>` / `check` | Yes: every site goes down briefly; checks everything came back |
+| "Send alerts from web1 to our Slack" | `alert-webhook.sh <host>` (on your laptop), then `alerts.sh on\|off\|test\|status` | Yes: a 10-minute timer on the server posts to Slack, Discord or Telegram when a problem appears or clears (URL read from a file, never the chat) |
 | "Give shop.example.com HTTPS" | `issue-certificate.sh` | Yes: Let's Encrypt certificate, HTTPS nginx config |
+| "Fix the permissions of shop.example.com" | `fix-permissions.sh <domain>` | Yes: files owned by the site user, `storage` and `bootstrap/cache` writable, `.env` 600 |
 | "Delete shop.example.com" | `delete-site.sh` | Yes, and it can't be undone |
 
 Inventory shows per site: web root, PHP version, HTTPS and certificate expiry, the deployed
@@ -112,6 +122,7 @@ of these later; the plugin will then talk to Servio instead of SSHing directly.
 - Servers: Ubuntu 22.04 or 24.04 LTS; your SSH user is root or has **passwordless sudo**
 - You've connected to each server by hand once (so its host key is known): the scripts never
   answer SSH prompts
+- For backups: [age](https://github.com/FiloSottile/age) on your laptop and a key pair (`age-keygen`); its public key in `~/ServioBackups/recipients.txt`
 - Optional: the GitHub CLI (`gh`, logged in with `gh auth login`) to see CI results before a
   deploy (`ci-status.sh`, read-only)
 
@@ -140,6 +151,7 @@ plugin hook, so there the secrets rule is advice only.
 .claude-plugin/plugin.json        the plugin
 .claude-plugin/marketplace.json   this repo is also its own marketplace
 skills/server-ops/SKILL.md        when to use it, the rules, the workflows
+skills/server-ops/references/     longer workflows the skill reads only when needed (data, backups, restore)
 skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one script per action,
                                   job-status.sh / job-stop.sh for long jobs
                                   ci-status.sh / project-link.sh run on your laptop, not the server

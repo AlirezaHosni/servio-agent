@@ -16,7 +16,7 @@ skip() { if [ -n "${CI:-}" ]; then bad "skipped in CI: $*"; else echo "skip  $*"
 echo "== Syntax (bash -n), alone and as the server sees it (lib.sh + script)"
 for f in "$S"/*.sh "$ROOT"/hooks/*.sh; do bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"; done
 perl -c "$ROOT/hooks/servio-guard.pl" >/dev/null 2>&1 && ok "perl -c servio-guard.pl" || bad "perl -c servio-guard.pl"
-for s in inventory health logs traffic site-details site-files security-check php-sizing project-check deploy-history provision-server create-site deploy-site rollback-site workers artisan restart-service domains suspend-site issue-certificate delete-site fix-permissions job-status job-stop; do
+for s in inventory health logs traffic site-details site-files security-check php-sizing project-check deploy-history provision-server create-site deploy-site rollback-site workers artisan restart-service domains suspend-site database backup-db backup-files restore-db pool-size change-php updates harden reboot alerts issue-certificate delete-site fix-permissions job-status job-stop; do
     cat "$S/lib.sh" "$S/$s.sh" | bash -n && ok "lib.sh + $s.sh" || bad "lib.sh + $s.sh"
 done
 
@@ -806,6 +806,106 @@ echo '{"host": "web1", "domain": "shop.example.com", "branch": "--upload-pack=x"
 pl show "$PL" >/dev/null; [ $? = 2 ] && ok "link: a branch that's really an option is refused" || bad "link branch"
 echo 'not json' > "$PL/.servio.json"; pl show "$PL" >/dev/null; [ $? = 2 ] && ok "link: not JSON = exit 2" || bad "link json"
 
+echo "== v0.6: databases (item 18), MySQL and Redis in provision"
+ES="$T/envset"; mkdir -p "$ES/home/u/shop.example.com/shared"
+envf="$ES/home/u/shop.example.com/shared/.env"
+printf 'APP_NAME=Shop\nAPP_KEY=base64:keepme\nDB_CONNECTION=sqlite\n# a comment\nDB_PASSWORD="old"\nMAIL_HOST=smtp.example.com\n' > "$envf"
+es() { (source "$S/lib.sh"; site_dir() { echo "$ES/home/u/$1"; }; site_user() { echo u; }; chown() { :; }; "$@") 2>&1; }
+out="$(printf '%s\n' DB_CONNECTION=mysql DB_DATABASE=s_x DB_PASSWORD=NEWsecret123 | es env_set shop.example.com)"
+[ -z "$out" ] && ok "env_set prints nothing" || bad "env_set printed: $out"
+want="$(printf 'APP_NAME=Shop\nAPP_KEY=base64:keepme\nDB_CONNECTION=mysql\n# a comment\nDB_PASSWORD=NEWsecret123\nMAIL_HOST=smtp.example.com\nDB_DATABASE=s_x')"
+[ "$(cat "$envf")" = "$want" ] && ok "env_set: keys replaced in place, new keys added, every other line kept" || bad "env_set result: $(cat "$envf")"
+if [ "$(stat -c %a "$envf" 2>/dev/null)" = 600 ]; then ok "env_set: the new .env is 600"; else skip "env_set file mode (this system doesn't keep Unix modes)"; fi
+[ -z "$(ls -A "$ES/home/u/shop.example.com/shared" | grep -v '^\.env$')" ] && ok "env_set leaves no temporary file behind" || bad "env_set leftovers: $(ls -A "$ES/home/u/shop.example.com/shared")"
+rm -f "$envf"; printf 'DB_HOST=127.0.0.1\n' | es env_set shop.example.com >/dev/null; [ "$(cat "$envf")" = "DB_HOST=127.0.0.1" ] && ok "env_set creates a missing .env" || bad "env_set new: $(cat "$envf" 2>&1)"
+out="$( (source "$S/lib.sh"; runuser() { shift 3; "$@"; }; printf 'DB_USERNAME=s_shopexamplecom_951623\nDB_PASSWORD=x\n' > "$T/db.env"; env_value "$T/db.env" DB_USERNAME u; echo "u=$ENV_VALUE"; env_value "$T/db.env" DB_PASSWORD u; echo "never") 2>&1)"
+[[ "$out" == *"u=s_shopexamplecom_951623"* && "$out" == *"not an allowed key"* && "$out" != *never* ]] && ok "env_value: DB_USERNAME allowed, DB_PASSWORD still refused" || bad "env_value db: $out"
+db() { (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/database.sh"); main "$@") >/dev/null 2>&1; echo $?; }
+[ "$(db shop.example.com)" = 2 ] && ok "database: an action is required" || bad "database no action"
+[ "$(db shop.example.com drop)" = 2 ] && ok "database: only 'create' for now" || bad "database drop"
+[ "$(db 'shop.example.com;x' create)" = 2 ] && ok "database: odd domain refused" || bad "database domain"
+grep -q 'IDENTIFIED BY' "$S/database.sh" && ! grep -qE 'mysql[^<]*-p|--password' "$S/database.sh" && ok "database: the password goes to mysql on stdin / an option file, never as an argument" || bad "database password on a command line"
+pv() { (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/provision-server.sh"); require_root() { echo "PARSED"; exit 0; }; main "$@") 2>&1; }
+[[ "$(pv 8.4 mysql redis)" == *PARSED* ]] && ok "provision: '8.4 mysql redis' accepted" || bad "provision mysql redis: $(pv 8.4 mysql redis)"
+[[ "$(pv 8.4 8.3 redis)" == *PARSED* ]] && ok "provision: PHP versions and redis mixed" || bad "provision mixed"
+pv 8.4 postgres >/dev/null; [ $? = 2 ] && ok "provision: unknown option refused (exit 2)" || bad "provision postgres"
+
+echo "== backups to the laptop (items 19, 64, decision 5)"
+KEY="age1$(printf 'q%.0s' $(seq 1 58))"
+names=""
+for d in 20261123 20261122 20261121 20261120 20261119 20261118 20261117 20261116 20261115 20261109 20261102 20261026 20261019 20261001 20260915 20260801 20260701; do
+    names="$names shop.example.com-db-$d-020000.sql.gz.age"
+done
+names="shop.example.com-db-20261123-180000.sql.gz.age$names"
+kl() { (source <(sed -n '/^keep_list()/,/^}/p' "$S/backup.sh"); KEEP_DAYS=7 KEEP_WEEKS=4 KEEP_MONTHS=3; printf '%s\n' $names | keep_list) 2>&1; }
+out="$(kl)"
+[[ "$out" == *"20261123-180000"* && "$out" != *"20261123-020000"* ]] && ok "retention: the newest backup of a day is kept, older ones that day go" || bad "keep day: $out"
+for d in 20261122 20261121 20261120 20261119 20261118; do [[ "$out" == *"-$d-"* ]] || bad "retention: day $d should be kept"; done
+[[ "$out" == *"-20261109-"* && "$out" == *"-20261102-"* && "$out" != *"-20261019-"* ]] && ok "retention: one per week for 4 weeks (older weeks go)" || bad "keep weeks: $out"
+[[ "$out" == *"-20261026-"* && "$out" != *"-20261001-"* && "$out" == *"-20260915-"* && "$out" != *"-20260801-"* && "$out" != *"-20260701-"* ]]     && ok "retention: the newest per month for 3 months (Oct 26 not Oct 1); older months go" || bad "keep months: $out"
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -le 14 ] && ok "retention keeps at most 7+4+3 files" || bad "keep count: $out"
+
+BK="$T/bk"; mkdir -p "$BK/scripts"; cp "$S/backup.sh" "$BK/scripts/"
+cat > "$BK/scripts/run.sh" <<'FAKE'
+#!/usr/bin/env bash
+# Fake run.sh: checks it was asked properly, then "streams" a backup as told by FAKE_RUN.
+printf '%s\n' "$@" > "$FAKE_DIR/run-args"; echo "${SERVIO_STREAM_TO_FILE:-unset}" > "$FAKE_DIR/run-env"
+case "${FAKE_RUN:-ok}" in
+    ok) printf 'age-encryption.org/v1\n-> X25519 abc\n'; head -c 400 /dev/zero | tr '\0' 'x' ;;
+    plain) echo "CREATE TABLE users (...); INSERT ..."; head -c 400 /dev/zero | tr '\0' 'x' ;;
+    fail) printf 'age-encryption.org/v1\npartial'; echo "ERROR: mysqldump failed" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$BK/scripts/run.sh"
+bk() { SERVIO_BACKUP_DIR="$BK/store" FAKE_DIR="$BK" bash "$BK/scripts/backup.sh" "$@" 2>&1; }
+bk web1 shop.example.com db >/dev/null; [ $? = 3 ] && ok "backup: no recipients.txt = exit 3, with how to set it up" || bad "backup no keys"
+mkdir -p "$BK/store"; echo "not-a-key" > "$BK/store/recipients.txt"
+bk web1 shop.example.com db >/dev/null; [ $? = 2 ] && ok "backup: a line that isn't an age key is refused" || bad "backup bad key"
+printf '# me\n%s\n' "$KEY" > "$BK/store/recipients.txt"
+out="$(bk web1 shop.example.com db)"; rc=$?
+f="$(ls "$BK/store/web1/shop.example.com/" 2>/dev/null)"
+[ "$rc" = 0 ] && [[ "$f" =~ ^shop\.example\.com-db-[0-9]{8}-[0-9]{6}\.sql\.gz\.age$ ]] && ok "backup: saved as <domain>-db-<time>.sql.gz.age" || bad "backup save: rc=$rc $out / $f"
+[[ "$out" == *"Size: "* && "$out" =~ SHA-256:\ [0-9a-f]{64} && "$out" != *xxxx* ]] && ok "backup: Claude sees name, size and SHA-256, never the data" || bad "backup output: $out"
+[ "$(cat "$BK/run-env")" = 1 ] && [ "$(sed -n 2p "$BK/run-args")" = "backup-db.sh" ] && [ "$(sed -n 4p "$BK/run-args")" = "$KEY" ] && ok "backup: run.sh gets backup-db.sh, the domain and the key, in stream mode" || bad "backup args: $(cat "$BK/run-args")"
+out="$(FAKE_RUN=plain bk web1 shop.example.com files)"; rc=$?
+[ "$rc" != 0 ] && [[ "$out" == *"isn't an age-encrypted file"* ]] && [ -z "$(ls "$BK/store/web1/shop.example.com/" | grep files)" ] && ok "backup: anything that isn't age-encrypted is not kept" || bad "backup plain: $rc $out"
+out="$(FAKE_RUN=fail bk web1 shop.example.com files)"; rc=$?
+[ "$rc" = 1 ] && [[ "$out" == *"Nothing was kept"* ]] && [ -z "$(ls -A "$BK/store/web1/shop.example.com/" | grep -E 'files|part')" ] && ok "backup: a failed backup leaves no file and no .part" || bad "backup fail: $rc $out"
+bk web1 'shop.example.com;x' db >/dev/null; [ $? = 2 ] && ok "backup: odd domain refused" || bad "backup domain"
+bk web1 shop.example.com everything >/dev/null; [ $? = 2 ] && ok "backup: db or files only" || bad "backup kind"
+out="$(bk list web1)"; [[ "$out" == *"web1/shop.example.com/shop.example.com-db-"* ]] && ok "backup list shows names and sizes" || bad "backup list: $out"
+out="$(PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 backup-db.sh shop.example.com "$KEY" 2>&1)"; rc=$?
+[ "$rc" = 2 ] && [[ "$out" == *"run by backup.sh"* ]] && ok "run.sh refuses a backup script unless backup.sh runs it (data never to the chat)" || bad "run.sh stream: $rc $out"
+bs() { (source "$S/lib.sh"; source <(sed '/^servio_run_stream "\$@"$/d' "$S/$1"); shift; main "$@") >/dev/null 2>&1; echo $?; }
+[ "$(bs backup-db.sh shop.example.com)" = 2 ] && ok "backup-db: needs at least one key" || bad "backup-db no key"
+[ "$(bs backup-db.sh shop.example.com 'age1;rm')" = 2 ] && ok "backup-db: an odd key is refused" || bad "backup-db key"
+[ "$(bs backup-files.sh shop.example.com notakey)" = 2 ] && ok "backup-files: an odd key is refused" || bad "backup-files key"
+
+echo "== PHP-FPM sizing applied, PHP version change (items 59, 23)"
+PE="$T/phpetc"
+pc2() { (source "$S/lib.sh"; PHP_ETC_DIR="$PE"; HOME_BASE=/home; "$@") 2>&1; }
+out="$(pc2 current_max_children shop.example.com)"; [ "$out" = 5 ] && ok "pool size: 5 when the site has no pool yet" || bad "max default: $out"
+mkdir -p "$PE/8.3/fpm/pool.d"
+(source "$S/lib.sh"; PHP_ETC_DIR="$PE"; POOL_MAX_CHILDREN=12; php_pool_config shop.example.com 8.3) > "$(pc2 pool_file shop.example.com 8.3)"
+grep -qx "pm.max_children = 12" "$(pc2 pool_file shop.example.com 8.3)" && ok "pool size: POOL_MAX_CHILDREN is written" || bad "pool write"
+out="$(pc2 current_max_children shop.example.com)"; [ "$out" = 12 ] && ok "pool size: read back from the site's pool" || bad "max read: $out"
+conf="$(pc2 php_pool_config shop.example.com 8.4)"; [[ "$conf" == *"pm.max_children = 12"* && "$conf" == *"php8.4-fpm-"* ]] \
+    && ok "pool size is kept when the pool is written for another PHP version (re-render, change-php)" || bad "max carry: $conf"
+echo "pm.max_children = 99999" > "$(pc2 pool_file shop.example.com 8.3)"; out="$(pc2 current_max_children shop.example.com)"; [ "$out" = 5 ] && ok "pool size: an odd value in the file falls back to 5" || bad "max odd: $out"
+mx() { (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/$1"); shift; main "$@") >/dev/null 2>&1; echo $?; }
+for n in 0 101 abc 5x; do [ "$(mx pool-size.sh shop.example.com "$n")" = 2 ] || bad "pool-size accepted '$n'"; done; ok "pool-size: only 1-100"
+[ "$(mx change-php.sh shop.example.com 7.4)" = 2 ] && ok "change-php: unsupported version refused" || bad "change-php 7.4"
+[ "$(mx change-php.sh shop.example.com)" = 2 ] && ok "change-php: version required" || bad "change-php none"
+SV2="$T/sv2"; CR2="$T/cron2"; mkdir -p "$SV2" "$CR2"
+(source "$S/lib.sh"; HOME_BASE=/home; worker_program shop.example.com 8.3 worker emails,default 3) > "$SV2/$(pc2 site_user shop.example.com)-worker.conf"
+(source "$S/lib.sh"; HOME_BASE=/home; scheduler_cron shop.example.com 8.3) > "$CR2/servio-$(pc2 site_user shop.example.com)"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/change-php.sh"); HOME_BASE=/home; SUPERVISOR_DIR="$SV2"; CRON_DIR="$CR2"
+    chown() { :; }; supervisorctl() { echo "supervisorctl $*"; }; rewrite_workers shop.example.com 8.4) 2>&1)"
+w="$(cat "$SV2/$(pc2 site_user shop.example.com)-worker.conf")"
+[[ "$w" == *"/usr/bin/php8.4 "*"--queue=emails,default "* && "$w" == *"numprocs=3"* && "$w" != *php8.3* ]] && ok "change-php: workers re-written for the new php, same queues and processes" || bad "rewrite worker: $w"
+grep -q "/usr/bin/php8.4 artisan schedule:run" "$CR2/servio-$(pc2 site_user shop.example.com)" && ok "change-php: scheduler cron uses the new php" || bad "rewrite cron"
+[[ "$out" == *"supervisorctl update"* ]] && ok "change-php: Supervisor reloads the changed workers" || bad "rewrite supervisor: $out"
+
 echo "== run.sh: what it sends, and how it reports connection problems (fake ssh)"
 mkdir -p "$T/bin"
 cat > "$T/bin/ssh" <<'FAKE'
@@ -843,6 +943,182 @@ FAKE_SSH=sudo fake_run web1 inventory.sh; rc=$?
 [ "$rc" = 3 ] && grep -q "passwordless sudo" "$T/run.out" && ok "sudo needs a password: exit 3, explained" || bad "sudo: rc=$rc"
 FAKE_SSH=code3 fake_run web1 inventory.sh; rc=$?
 [ "$rc" = 3 ] && ok "the script's own exit code comes through (3)" || bad "code3: rc=$rc"
+
+echo "== restore (item 32)"
+# The core trick: bash reads a script from a pipe byte by byte, so data AFTER the script is
+# still there for the script's main. lib.sh + a script ending in servio_run_input + data.
+SI="$T/streamin"; mkdir -p "$SI"
+printf 'main() { echo "got $(wc -c | tr -d " ") bytes, arg $1"; }\nservio_run_input "$@"\n' > "$SI/script.sh"
+head -c 100000 /dev/zero | tr '\0' 'z' > "$SI/data"
+out="$( { sed 's/\r$//' "$S/lib.sh" "$SI/script.sh"; cat "$SI/data"; } | bash -s -- x 2>&1)"
+[ "$out" = "got 100000 bytes, arg x" ] && ok "stream in: the script reads exactly the data sent after it" || bad "stream in: $out"
+printf 'main() { echo "main ran"; }\nservio_run_input "$@"\n' > "$SI/script2.sh"
+out="$( { sed 's/\r$//' "$S/lib.sh" "$SI/script2.sh"; printf 'echo INJECTED\n'; } | bash -s 2>&1)"
+[ "$out" = "main ran" ] && ok "stream in: data a script doesn't read is never run as commands (it exits first)" || bad "stream in exit: $out"
+
+KEY="age1$(printf 'q%.0s' $(seq 1 58))"
+out="$(PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 restore-db.sh shop.example.com live shop.example.com < /dev/null 2>&1)"; rc=$?
+[ "$rc" = 2 ] && [[ "$out" == *"run by restore.sh"* ]] && ok "run.sh refuses restore-db.sh unless restore.sh sends the data" || bad "run.sh restore refuse: $rc $out"
+echo "DUMPDATA" | PATH="$T/bin:$PATH" FAKE_DIR="$T" SERVIO_STREAM_FROM_FILE=1 bash "$S/run.sh" web1 restore-db.sh shop.example.com new shop.example.com >/dev/null 2>&1
+[ "$(tail -n 1 "$T/payload")" = "DUMPDATA" ] && grep -q '^servio_run_input "\$@"$' "$T/payload" && ok "run.sh sends the data right after the script" || bad "run.sh feed: $(tail -n 3 "$T/payload")"
+PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 restore-db.sh shop.example.com live shop.example.com --dry-run < /dev/null >/dev/null 2>&1
+[ "$(tail -n 1 "$T/payload")" = 'servio_run_input "$@"' ] && ok "a restore dry run sends no data" || bad "dry run fed data: $(tail -n 1 "$T/payload")"
+
+rd() { (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/restore-db.sh"); "$@") 2>&1; }
+rdm() { (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/restore-db.sh"); main "$@") >/dev/null 2>&1; echo $?; }
+[ "$(rdm shop.example.com live other.example.com)" = 4 ] && ok "restore-db: a typed domain that doesn't match is refused (exit 4)" || bad "restore typed"
+[ "$(rdm shop.example.com overwrite shop.example.com)" = 2 ] && ok "restore-db: mode new or live only" || bad "restore mode"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/restore-db.sh")
+    sql_value() { case "$1" in *"'shopdb'"*) printf 'users\norders\n' ;; *"'shopdb_tmp_1'"*) printf 'users\norders\nnew_table\n' ;; esac; }
+    swap_statement shopdb shopdb_tmp_1 shopdb_old_1) 2>&1)"
+[ "$out" = 'RENAME TABLE `shopdb`.`users` TO `shopdb_old_1`.`users`, `shopdb`.`orders` TO `shopdb_old_1`.`orders`, `shopdb_tmp_1`.`users` TO `shopdb`.`users`, `shopdb_tmp_1`.`orders` TO `shopdb`.`orders`, `shopdb_tmp_1`.`new_table` TO `shopdb`.`new_table`;' ] \
+    && ok "restore-db: ONE RENAME TABLE moves the live tables out and the restored ones in" || bad "swap: $out"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/restore-db.sh"); sql_value() { printf 'users\nx`; DROP DATABASE y\n'; }; swap_statement a b c) 2>&1)"
+[[ "$out" == *"Unexpected table name"* && "$out" != *"RENAME"* ]] && ok "restore-db: an odd table name stops the swap" || bad "swap odd: $out"
+
+RS2="$T/rs"; mkdir -p "$RS2/scripts" "$RS2/bin" "$RS2/backups"
+cp "$S/restore.sh" "$RS2/scripts/"
+cat > "$RS2/bin/age" <<'FAKE'
+#!/usr/bin/env bash
+# Fake age: "-d -i key file" prints the file (our test files are plain gzip).
+[ "$1" = "-d" ] && cat "$4"
+FAKE
+cat > "$RS2/scripts/run.sh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/run-args"; echo "${SERVIO_STREAM_FROM_FILE:-unset}" > "$FAKE_DIR/run-env"
+[ -t 0 ] || wc -c > "$FAKE_DIR/run-bytes"
+FAKE
+cat > "$RS2/scripts/backup.sh" <<'FAKE'
+#!/usr/bin/env bash
+echo backup-called > "$FAKE_DIR/backup-called"; exit "${FAKE_BACKUP_RC:-0}"
+FAKE
+chmod +x "$RS2/bin/age" "$RS2/scripts/run.sh" "$RS2/scripts/backup.sh"
+echo "CREATE TABLE t (id int);" | gzip > "$RS2/backups/shop.example.com-db-20261123-100000.sql.gz.age"
+cp "$RS2/backups/shop.example.com-db-20261123-100000.sql.gz.age" "$RS2/backups/blog.example.com-db-20261123-100000.sql.gz.age"
+echo "not gzip" > "$RS2/backups/shop.example.com-db-20261122-100000.sql.gz.age"
+touch "$RS2/key.txt"
+rs() { rm -f "$RS2"/run-* "$RS2/backup-called"; PATH="$RS2/bin:$PATH" FAKE_DIR="$RS2" SERVIO_AGE_KEY="$RS2/key.txt" bash "$RS2/scripts/restore.sh" "$@" 2>&1; }
+good="$RS2/backups/shop.example.com-db-20261123-100000.sql.gz.age"
+rs web1 shop.example.com "$good" live shop.example.co >/dev/null; [ $? = 4 ] && ok "restore: typed domain must match (checked on the laptop too)" || bad "restore typed laptop"
+rs web1 shop.example.com "$RS2/backups/blog.example.com-db-20261123-100000.sql.gz.age" live shop.example.com >/dev/null; [ $? = 4 ] && ok "restore: another site's backup is refused" || bad "restore other site"
+out="$(rs web1 shop.example.com "$RS2/backups/shop.example.com-db-20261122-100000.sql.gz.age" new shop.example.com)"; rc=$?
+[ "$rc" = 1 ] && [[ "$out" == *"damaged"* ]] && [ ! -f "$RS2/run-args" ] && ok "restore: a damaged backup stops before anything is sent" || bad "restore damaged: $rc $out"
+SERVIO_AGE_KEY=/nope PATH="$RS2/bin:$PATH" FAKE_DIR="$RS2" bash "$RS2/scripts/restore.sh" web1 shop.example.com "$good" new shop.example.com >/dev/null 2>&1; [ $? = 3 ] && ok "restore: no private key = exit 3" || bad "restore no key"
+out="$(FAKE_BACKUP_RC=1 rs web1 shop.example.com "$good" live shop.example.com)"; rc=$?
+[ "$rc" = 1 ] && [ -f "$RS2/backup-called" ] && [ ! -f "$RS2/run-args" ] && ok "restore live: if the fresh backup fails, nothing is restored" || bad "restore live no backup: $rc $out"
+out="$(rs web1 shop.example.com "$good" live shop.example.com)"; rc=$?
+[ "$rc" = 0 ] && [ -f "$RS2/backup-called" ] && [ "$(cat "$RS2/run-env")" = 1 ] && [ "$(tr -d ' ' < "$RS2/run-bytes")" -gt 10 ] \
+    && [ "$(sed -n 2p "$RS2/run-args")" = restore-db.sh ] && [ "$(sed -n 4p "$RS2/run-args")" = live ] \
+    && ok "restore live: fresh backup first, then the decrypted dump streamed to restore-db.sh" || bad "restore live: $rc $out / $(cat "$RS2/run-args" 2>&1)"
+out="$(rs web1 shop.example.com "$good" new shop.example.com)"; [ ! -f "$RS2/backup-called" ] && [ "$(sed -n 4p "$RS2/run-args")" = new ] && ok "restore new: no fresh backup needed (live data untouched)" || bad "restore new: $out"
+out="$(rs web1 shop.example.com "$good" live shop.example.com --dry-run)"; [ ! -f "$RS2/backup-called" ] && grep -qx -- "--dry-run" "$RS2/run-args" && [ "$(tr -d " " < "$RS2/run-bytes")" = 0 ] && ok "restore dry run: no backup, no data sent, the server's dry run only" || bad "restore dry: $out"
+
+echo "== updates, hardening, reboot (items 25, 53, 74)"
+hd() { (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/harden.sh"); "$@") 2>&1; }
+out="$(hd sshd_dropin deploy)"
+for want in "PasswordAuthentication no" "KbdInteractiveAuthentication no" "PermitEmptyPasswords no" "MaxAuthTries 3" "PermitRootLogin no"; do
+    printf '%s\n' "$out" | grep -qx "$want" || bad "sshd drop-in lacks '$want'"
+done
+ok "harden ssh: key only, no empty passwords, MaxAuthTries 3, root login off for a sudo user"
+hd sshd_dropin root | grep -qx "PermitRootLogin prohibit-password" && ok "harden ssh: someone connecting as root keeps root login, key only (not locked out)" || bad "root dropin"
+grep -q 'SSHD_DROPIN="/etc/ssh/sshd_config.d/00-servio.conf"' "$S/harden.sh" && ok "harden ssh: the file is 00-… so it's read first (sshd keeps the first value)" || bad "dropin name"
+HK="$T/hk"; mkdir -p "$HK/home/ali/.ssh"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/harden.sh"); SUDO_USER=ali; getent() { echo "ali:x:1000:1000::$HK/home/ali:/bin/bash"; }; harden_ssh) 2>&1; echo "rc=$?")"
+[[ "$out" == *"rc=4"* && "$out" == *"no key in"* ]] && ok "harden ssh: refused when your user has no key (passwords off would lock you out)" || bad "harden no key: $out"
+for a in "" all disable-root; do
+    (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/harden.sh"); main "$a") >/dev/null 2>&1; [ $? = 2 ] || bad "harden accepted '$a'"
+done; ok "harden: ssh, confirm, fail2ban or php only"
+grep -q 'systemd-run --unit "$REVERT_UNIT" --on-active="$REVERT_SECONDS"' "$S/harden.sh" && grep -q 'systemctl stop "$REVERT_UNIT.timer"' "$S/harden.sh" \
+    && ok "harden ssh: an undo is armed and only 'confirm' (a new connection) stops it" || bad "harden undo missing"
+! grep -qE 'disable_functions *=' "$S/harden.sh" && ok "harden php: no disable_functions (Laravel needs exec/proc_open)" || bad "disable_functions used"
+(source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/updates.sh"); main everything) >/dev/null 2>&1; [ $? = 2 ] && ok "updates: upgrade or auto only" || bad "updates action"
+grep -q 'Automatic-Reboot "false"' "$S/updates.sh" && ok "updates auto: automatic reboot written OFF explicitly" || bad "auto reboot"
+grep -q 'force-confold' "$S/updates.sh" && ok "updates: changed config files are kept (confold)" || bad "confold"
+out="$(PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 reboot.sh now web2 2>&1)"; rc=$?
+[ "$rc" = 4 ] && [[ "$out" == *"type the host alias back exactly"* ]] && ok "reboot: a typed alias that isn't the target is refused (exit 4, before any ssh)" || bad "reboot typed: $rc $out"
+PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 reboot.sh now web1 --dry-run >/dev/null 2>&1; [ $? = 0 ] && ok "reboot: the matching alias goes through" || bad "reboot match"
+RB="$T/rb"; mkdir -p "$RB"
+printf 'service nginx\nservice php8.4-fpm\nworker s_shop_aaaaaa-worker:s_shop_aaaaaa-worker_00\n' > "$RB/before"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/reboot.sh"); STATE_FILE="$RB/before"; uptime() { echo "2026-11-23 10:00:00"; }
+    running_now() { printf 'service nginx\nworker s_shop_aaaaaa-worker:s_shop_aaaaaa-worker_00\n'; }; check_after) 2>&1)"
+[[ "$out" == *"PASS          service nginx: running again"* && "$out" == *"FAIL          service php8.4-fpm: was running before the reboot, isn't now"* && "$out" == *"PASS          worker"* ]] \
+    && ok "reboot check: what ran before must run again; a missing one is a FAIL" || bad "reboot check: $out"
+(source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/reboot.sh"); main later) >/dev/null 2>&1; [ $? = 2 ] && ok "reboot: now or check only" || bad "reboot action"
+
+echo "== alerts (item 76)"
+out="$(PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 alerts.sh webhook < /dev/null 2>&1)"; rc=$?
+[ "$rc" = 2 ] && [[ "$out" == *"run by alert-webhook.sh"* ]] && ok "run.sh refuses 'alerts.sh webhook' unless alert-webhook.sh sends the URL" || bad "alerts webhook refuse: $rc $out"
+PATH="$T/bin:$PATH" FAKE_DIR="$T" bash "$S/run.sh" web1 alerts.sh on < /dev/null >/dev/null 2>&1
+[ $? = 0 ] && [ "$(tail -n 1 "$T/payload")" = 'servio_run_input "$@"' ] && ok "alerts.sh on/off/test/status run normally (no data fed)" || bad "alerts on fed: $(tail -n 1 "$T/payload")"
+echo "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXX" | PATH="$T/bin:$PATH" FAKE_DIR="$T" SERVIO_STREAM_FROM_FILE=1 bash "$S/run.sh" web1 alerts.sh webhook >/dev/null 2>&1
+[ "$(tail -n 1 "$T/payload")" = "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXX" ] && ok "alerts webhook: the URL follows the script on the stream" || bad "alerts feed: $(tail -n 2 "$T/payload")"
+
+al() { (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/alerts.sh"); "$@") 2>&1; }
+(source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/alerts.sh"); main everything) >/dev/null 2>&1; [ $? = 2 ] && ok "alerts: webhook, on, off, test or status only" || bad "alerts action"
+SLACK="https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXX"
+DISCORD="https://discord.com/api/webhooks/123456789/abcdefghijklmnopqrstuvwxyz_-12"
+TELEGRAM="https://api.telegram.org/bot123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc/sendMessage?chat_id=-1001234"
+for u in "$SLACK" "$DISCORD" "$TELEGRAM"; do
+    (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/alerts.sh"); [[ "$u" =~ $WEBHOOK_PATTERN ]]) || bad "webhook pattern should accept $u"
+done; ok "webhook pattern: Slack, Discord, Telegram (numeric chat_id)"
+for u in "http://hooks.slack.com/services/T000/B000/XXXXXXXXXXXX" "https://evil.example.com/services/T000/B000/XXXXXXXXXXXX" \
+         "https://api.telegram.org/bot123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc/sendMessage?chat_id=@chan" \
+         "https://hooks.slack.com/services/T000/B000/XXXX\"XXXXXXXX" "https://discord.com/api/webhooks/123456789/abc def"; do
+    (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/alerts.sh"); [[ "$u" =~ $WEBHOOK_PATTERN ]]) && bad "webhook pattern should refuse $u"
+done; ok "webhook pattern: refuses http, other hosts, odd characters (a quote would break the curl file)"
+AL="$T/alerts"; mkdir -p "$AL"
+sw() { rm -f "$AL/hook"; printf '%s\n' "$1" | (source "$S/lib.sh"; source <(sed '/^servio_run_input "\$@"$/d' "$S/alerts.sh")
+       ALERT_DIR="$AL"; WEBHOOK_FILE="$AL/hook"; CHECKER="$AL/none"; write_file() { cat > "$1"; }; install() { :; }; save_webhook) 2>&1; }
+out="$(sw "https://evil.example.com/x?token=SECRET123")"; rc=$?
+[ "$rc" = 2 ] && [ ! -f "$AL/hook" ] && [[ "$out" != *SECRET123* ]] && ok "alerts webhook: a wrong URL is refused, not saved, not echoed back" || bad "sw bad: $rc $out"
+out="$(sw "$SLACK")"; rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$AL/hook")" = "url = \"$SLACK\"" ] && [[ "$out" != *XXXXXXXXXXXX* && "$out" == *"slack webhook is saved"* ]] \
+    && ok "alerts webhook: saved as a curl config (url = \"...\"), never printed" || bad "sw good: $rc $out"
+grep -q -- '-K "$WEBHOOK"' "$S/alerts.sh" && ! grep -qE 'curl[^\n]*"\$url"' "$S/alerts.sh" && ok "alerts: curl reads the URL from the file (-K): never on a command line" || bad "curl -K"
+
+al alert_checker > "$AL/check.sh"
+bash -n "$AL/check.sh" && ok "the checker installed on the server is valid bash" || bad "checker syntax"
+ck() { (source "$AL/check.sh" source; host_name() { echo web1.example.com; }; "$@") 2>&1; }
+js="$(ck payload discord 'disk "/" full
+next \ line')"
+perl -MJSON::PP -e 'my $d = decode_json($ARGV[0]); exit($d->{content} eq qq{disk "/" full\nnext \\ line} ? 0 : 1)' "$js" \
+    && ok "alerts payload: Discord gets {\"content\": ...}, quotes, backslashes and newlines escaped (valid JSON)" || bad "payload discord: $js"
+[[ "$(ck payload slack hi)" == '{"text":"hi"}' && "$(ck payload telegram hi)" == '{"text":"hi"}' ]] && ok "alerts payload: Slack and Telegram get {\"text\": ...}" || bad "payload text"
+D="disk /: 90% or more full"; W="worker s_shop_aaaaaa-worker:s_shop_aaaaaa-worker_00: FATAL"
+out="$(ck message "" "$D" 100)"
+[[ "$out" == *"PROBLEM on web1.example.com:"* && "$out" == *"- $D"* ]] && ok "alerts: a NEW problem is posted" || bad "message new: $out"
+[ -z "$(ck message "$D" "$D" 600)" ] && ok "alerts: the same problem 10 minutes later is NOT posted again" || bad "message repeat"
+[[ "$(ck message "$D" "$D" 90000)" == *"Still a problem on"* ]] && ok "alerts: a reminder once a day while it lasts" || bad "message remind"
+out="$(ck message "$D"$'\n'"$W" "$W" 100)"
+[[ "$out" == *"Fixed on web1.example.com:"* && "$out" == *"- $D"* && "$out" != *PROBLEM* ]] && ok "alerts: a problem that clears is posted as fixed" || bad "message fixed: $out"
+[ -z "$(ck message "" "" 999999)" ] && ok "alerts: nothing wrong = nothing posted" || bad "message empty"
+ST="$AL/state"; rm -f "$ST"
+(source "$AL/check.sh" source; STATE="$ST"; problems() { echo "$D"; }; send() { return 1; }; host_name() { echo h; }; run_check) >/dev/null 2>&1
+[ ! -f "$ST" ] && ok "alerts: when the post fails, nothing is remembered (the next run tries again)" || bad "run_check fail kept state"
+(source "$AL/check.sh" source; STATE="$ST"; problems() { echo "$D"; }; send() { echo sent >> "$AL/sends"; }; host_name() { echo h; }; run_check; run_check) >/dev/null 2>&1
+[ "$(wc -l < "$AL/sends")" = 1 ] && grep -qx "$D" "$ST" && grep -q '^#sent [0-9]' "$ST" && ok "alerts: posted once, remembered (two runs, one message)" || bad "run_check state: $(cat "$ST" 2>&1)"
+NG="$AL/nginx"; mkdir -p "$NG" "$AL/live/up.example.com"
+printf '# Managed by Servio. x\nserver {}\n' > "$NG/up.example.com"; touch "$AL/live/up.example.com/fullchain.pem"
+printf '# Managed by Servio. x\nserver {}\n' > "$NG/down.example.com"
+printf '# Managed by Servio. x\n# servio-suspended: yes\nserver {}\n' > "$NG/paused.example.com"
+printf 'server {}\n' > "$NG/handmade.example.com"
+out="$( (source "$AL/check.sh" source; NGINX_ENABLED="$NG"; LIVE="$AL/live"
+    curl() { case "$*" in *up.example.com:443*https://up.example.com/*) echo 200 ;; *down.example.com:80*) echo 502 ;; *) echo 000 ;; esac; }; site_problems) 2>&1)"
+[ "$out" = "site down.example.com: answers 502" ] && ok "alerts: sites are asked on the server (https if it has a certificate); suspended and hand-made configs skipped" || bad "site_problems: $out"
+AW="$T/aw"; mkdir -p "$AW/scripts"; cp "$S/alert-webhook.sh" "$AW/scripts/"
+cat > "$AW/scripts/run.sh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/run-args"; echo "${SERVIO_STREAM_FROM_FILE:-unset}" > "$FAKE_DIR/run-env"
+[ -t 0 ] || cat > "$FAKE_DIR/run-data"
+FAKE
+aw() { rm -f "$AW"/run-*; FAKE_DIR="$AW" SERVIO_ALERT_WEBHOOK="$AW/hook.txt" bash "$AW/scripts/alert-webhook.sh" "$@" 2>&1; }
+rm -f "$AW/hook.txt"; aw web1 >/dev/null; [ $? = 3 ] && [ ! -f "$AW/run-args" ] && ok "alert-webhook: no file on the laptop = exit 3, nothing sent" || bad "aw no file"
+echo "https://evil.example.com/hook?t=SECRET999" > "$AW/hook.txt"; out="$(aw web1)"; rc=$?
+[ "$rc" = 2 ] && [ ! -f "$AW/run-args" ] && [[ "$out" != *SECRET999* ]] && ok "alert-webhook: not a Slack/Discord/Telegram URL = refused on the laptop, never echoed" || bad "aw bad: $rc $out"
+printf '%s\r\n' "$DISCORD" > "$AW/hook.txt"; out="$(aw web1)"; rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$AW/run-data")" = "$DISCORD" ] && [ "$(cat "$AW/run-env")" = 1 ] && [ "$(sed -n 2,3p "$AW/run-args" | tr '\n' ' ')" = "alerts.sh webhook " ] \
+    && [[ "$out" == *"Discord webhook"* && "$out" != *abcdefghij* ]] && ok "alert-webhook: the URL goes on the stream to 'alerts.sh webhook', only its kind is shown" || bad "aw good: $rc $out"
+out="$(aw web1 --dry-run)"; [ ! -s "$AW/run-data" ] && grep -qx -- "--dry-run" "$AW/run-args" && ok "alert-webhook dry run: the URL isn't sent" || bad "aw dry: $out"
 
 echo "== Long jobs (item 45), in the foreground fallback (no systemd in tests)"
 stub='require_root() { :; }; has_systemd() { false; }; JOBS_DIR='"$T"'/jobs'

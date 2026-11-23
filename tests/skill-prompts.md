@@ -34,6 +34,17 @@ only checks this file's shape.
 - Add shop.example.org to shop.example.com and redirect www.
 - Suspend shop.example.com, the client hasn't paid.
 - Link this project to shop.example.com on web1.
+- Create a MySQL database for shop.example.com.
+- Install Redis on web2.
+- Back up the database of shop.example.com.
+- Which backups do we have for web1?
+- Restore yesterday's database backup of shop.example.com.
+- Move shop.example.com to PHP 8.5.
+- Give shop.example.com 10 PHP workers.
+- Update the packages on web1.
+- Harden web2.
+- Reboot web1 tonight.
+- Send alerts from web1 to our Slack.
 - Deploy this project (inside a folder with .servio.json).
 
 ## Should not trigger

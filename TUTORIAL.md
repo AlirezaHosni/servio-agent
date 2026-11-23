@@ -79,6 +79,10 @@ keeps going even if your laptop sleeps. Safe to run again if it fails halfway.
 Need another PHP version too? "Provision web1 with PHP 8.4 and 8.3": 8.4 is the default, and each
 site can choose either.
 
+Need a database or Redis? "Provision web1 with PHP 8.4, MySQL and Redis" adds MySQL 8 and Redis,
+both listening only on the server itself. MySQL's admin login works only as root on the server
+(no admin password exists anywhere).
+
 ## 5. Create the site
 
 > Create shop.example.com on web1.
@@ -99,6 +103,14 @@ leave "Allow write access" **off**.
 Now point the domain at the server: in your DNS, an **A record** for `shop.example.com` with
 the server's IP. Visiting `http://shop.example.com` shows a "This site is set up" page once DNS
 has updated.
+
+### A database for the site
+
+> Create a MySQL database for shop.example.com.
+
+A database and a user, both named after the site's Linux user, allowed on that database only.
+The password is made **on the server** and written straight into the site's `shared/.env`
+(`DB_*` lines): it's never shown, not to you and not to Claude. Safe to ask again.
 
 ## 6. Deploy
 
@@ -179,6 +191,29 @@ Point the new names' DNS at the server first. If the site has HTTPS, Claude then
 certificate so it covers every name. "Suspend shop.example.com" shows visitors a "temporarily
 unavailable" page (the app isn't touched); "resume" brings it back.
 
+### Backups
+
+Once, on your laptop: install [age](https://github.com/FiloSottile/age), then
+
+```bash
+mkdir -p ~/.config/servio ~/ServioBackups
+age-keygen -o ~/.config/servio/age-key.txt          # your PRIVATE key: back it up somewhere safe
+age-keygen -y ~/.config/servio/age-key.txt >> ~/ServioBackups/recipients.txt
+```
+
+> Back up the database of shop.example.com.
+
+The server encrypts the backup for your public key; it arrives in
+`~/ServioBackups/web1/shop.example.com/`. Without the private key nobody can open it, not even
+someone who breaks into the server or your backup folder. "Back up the files" does the same for
+uploads. Old backups are cleaned up (7 daily, 4 weekly, 3 monthly).
+
+> Restore yesterday's database backup of shop.example.com.
+
+Claude lists your backups, suggests restoring into a **new** database first (the site isn't
+touched), and for a **live** restore asks you to type the domain. A live restore takes a fresh
+backup first, imports into a temporary database, and only then swaps it in.
+
 ## 8. Check it
 
 > What's running on web1?
@@ -213,7 +248,7 @@ The last hour of traffic: status codes, top addresses and paths, scanner probes 
 
 SSH settings, firewall and fail2ban, databases open to the internet, PHP settings, certificates,
 accounts, `.env` permissions, `APP_DEBUG`, `composer audit`, Docker ports. Fixing what it finds
-is a separate change (planned for v0.6); for now it tells you what and why.
+is a separate change, with its own OK: see "Look after the server" below.
 
 > Tell me about shop.example.com. / How many PHP workers fit on web1?
 
@@ -222,6 +257,56 @@ the sites have traffic: idle pools have no workers to measure).
 
 When a problem is fixed, Claude offers to **save it as a runbook** in `runbooks/`: commit it and
 open a pull request so the team has it next time.
+
+### Alerts: the server tells you
+
+Nobody is chatting at 3 a.m., so a server can check itself. Once, on your laptop, put your
+webhook URL in a file (don't paste it into the chat: anyone with it can post to your channel):
+
+```bash
+mkdir -p ~/.config/servio
+nano ~/.config/servio/alert-webhook.txt   # one line: the Slack, Discord or Telegram webhook URL
+chmod 600 ~/.config/servio/alert-webhook.txt
+```
+
+> Send alerts from web1 to our Slack.
+
+Claude sends the URL from that file to the server (`alert-webhook.sh`, it shows only "a Slack
+webhook"), turns alerts on, and offers a test message. Every 10 minutes the server checks full
+disks, low memory, failed services, crashed workers, certificates about to expire and whether
+each site answers. You get a message when a problem **appears**, when it's **fixed**, and once a
+day while it lasts. A server can't tell you it is itself down: for that, use an outside uptime
+service too.
+
+## 10. Look after the server
+
+> Move shop.example.com to PHP 8.5.
+
+The version must be installed on the server first (provision). Claude first checks that the
+project's `composer.lock` accepts the new version and has its extensions; then the site switches
+pools, nginx, workers and scheduler. If the site doesn't answer afterwards, it switches back.
+
+> Give shop.example.com 10 PHP workers.
+
+Sets the pool's `pm.max_children`. Ask "How many PHP workers fit on web1?" first, while the sites
+have traffic: more workers than memory allows makes everything slower, not faster.
+
+> Update the packages on web1. / Turn on security updates.
+
+A dry run lists every update first. The upgrade keeps your changed config files, checks that
+every service still runs, and tells you if a reboot is needed: it never reboots by itself.
+Automatic **security** updates run daily, with automatic reboot off.
+
+> Harden web2.
+
+One step at a time: key-only SSH, fail2ban, safe PHP settings. After the SSH step the server
+**undoes it by itself in 5 minutes** unless Claude confirms over a new connection, so a mistake
+can't lock you out. Try it on a throwaway server first.
+
+> Reboot web1 tonight.
+
+Claude asks you to type `web1` back (every site goes down for a minute or two), then checks that
+every service and worker that ran before is running again.
 
 ## Deleting a site
 

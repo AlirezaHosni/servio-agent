@@ -23,11 +23,11 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 | **v0.3** ✅ built (not yet run on a real server; Servio panel still to do) | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
 | **v0.4** ✅ built (not yet run on a real server) | See everything (read-only) | 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 78 server logs · 46 runbooks. **Skill text only, no script:** 2 all servers (inventory on each alias, merged) · 47 save as runbook |
 | **v0.5** ✅ built (not yet run on a real server) | Laravel deploys | **A** 11–12 project check · **B** 15 release folders, health check, npm build, worker restart · 8 commits before deploy · access-log format with request time (14) · **C** 16 rollback · 72 deploy history · **D** 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · **E** 14 extra domains and `www` · 77 suspend / resume · **F** 8 CI status via `gh` (laptop) · 75 project linking · docs |
-| **v0.6** | Data and server care | 18 database setup · 19 database backup to the laptop · 64 file backup · 32 restore (destructive) · 23 change PHP version · 59 apply PHP-FPM sizing · 24 firewall · 25 package updates · 53 harden a server · 74 reboot · 76 alerts |
+| **v0.6** ✅ built (not yet run on a real server) | Data and server care | **A** MySQL 8 + Redis in provision (decided 2026-11-23: MySQL 8 only, Ubuntu's package) · 18 database setup · **B** 19 database backup to the laptop (age-encrypted) · 64 file backup (uploads, age-encrypted) · **C** 32 restore (fresh backup first; or into a new database) · **D** 23 change PHP version · 59 apply PHP-FPM sizing · **E** 25 package updates · 53 harden a server · 74 reboot · **F** 76 alerts · docs |
 | **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
 | **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
 | **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
-| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) · 73 redirects · 17 HSTS switch · maintenance mode around deploys (moved out of v0.5) |
+| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) · 73 redirects · 17 HSTS switch · maintenance mode around deploys (moved out of v0.5) · 24 firewall rules · 19 restore drill in Docker (moved out of v0.6) |
 
 Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
 size needs it; anything mainly useful for big teams is asked about first, not built by default.
@@ -173,9 +173,9 @@ Why this order:
     `includeSubDomains` or `preload` unless you ask: a wrong HSTS can lock visitors out for months.
     The header uses `always` (sent on error pages too) and is placed so no `location` drops it
     (the `add_header` trap, A-62).
-18. **Set up a database** (new): create a MySQL database and user for a site. The password is made
+18. **Set up a database** (done in v0.6: `database.sh`): create a MySQL database and user for a site. The password is made
     on the server, written into the site's `.env` by the script, and never printed.
-19. **Back up a database to your laptop** (new): the script reads the database login on the server
+19. **Back up a database to your laptop** (done in v0.6: `backup.sh` + `backup-db.sh`): the script reads the database login on the server
     (it never reaches the chat), dumps without locking the site (`mysqldump --single-transaction
     --routines --triggers --events`), compresses it and streams it **into a file** on your laptop.
     Only the file's size and SHA-256 are shown to Claude. No copy stays on the server.
@@ -199,7 +199,7 @@ Why this order:
     `scheduler` (and `horizon` / `reverb`) services in the compose file.
 22. **Restart a service** (done in v0.5: `restart-service.sh`; containers in v0.8): PHP-FPM, nginx, MySQL, Redis, Supervisor, a site's workers, or a
     site's containers.
-23. **Change a site's PHP version** (new; a server holds several versions, decision 1): install another
+23. **Change a site's PHP version** (done in v0.6: `change-php.sh`; a server holds several versions, decision 1): install another
     PHP version if needed, then **first**
     run `composer check-platform-reqs` with the new PHP and stop if it fails; switch the site to
     it, test with `nginx -t`, roll back on failure, then restart the site's workers.
@@ -207,13 +207,13 @@ Why this order:
     only** (e.g. MySQL 3306 only from the app server). The SSH port can never be closed.
     On Ubuntu 24.04 SSH is started by `ssh.socket` (socket activation): the port it listens on
     comes from the socket, so the scripts read it there too, never only from `sshd_config`.
-25. **Update server packages** (new): `apt upgrade` (shows the list first) and automatic security
+25. **Update server packages** (done in v0.6: `updates.sh`): `apt upgrade` (shows the list first) and automatic security
     updates (unattended-upgrades). **Automatic reboot is off** unless you turn it on for a server.
     Composer packages are **not** updated on servers: run `composer update` locally, commit
     `composer.lock`, deploy.
 26. **Fix permissions** (**done, v0.3**: fix-permissions.sh): site files owned by the site's own user (decision 6); `storage` and `bootstrap/cache`
     writable. For the usual "permission denied" errors, without free-form `chmod`/`chown`.
-53. **Harden a server** (new), each step checked before the next, so nobody is locked out:
+53. **Harden a server** (done in v0.6: `harden.sh`), each step checked before the next, so nobody is locked out:
     - **SSH:** a config file named `00-servio.conf` in `sshd_config.d` (sshd uses the first value
       it reads, so a later file would win otherwise); first turn off password and
       keyboard-interactive login; test with `sshd -t`; reload; **prove key login works in a new
@@ -237,10 +237,14 @@ Why this order:
 75. **Project linking** (done in v0.5: `project-link.sh`): a `.servio.json` in the Laravel project with the host alias and the
     domain (no secrets, safe to commit), so "deploy" or "show the logs" inside that project
     folder just works. Claude still names the target and asks for your OK.
-76. **Alerts from the server** (new, opt-in per server): a systemd timer **on the server** checks
-    disk, memory, failed services, workers, certificate expiry, backup age and whether each site
-    answers, and posts problems to a Slack, Discord or Telegram webhook. Runs with nobody chatting.
-    Limit: a server can't report that it is itself down; that needs an outside uptime service.
+76. **Alerts from the server** (done in v0.6: `alerts.sh`, `alert-webhook.sh`; opt-in per server):
+    a systemd timer **on the server** checks disk, memory, failed services, workers, certificate
+    expiry and whether each site answers, and posts to a Slack, Discord or Telegram webhook when a
+    problem appears, when it clears, and once a day while it lasts. Runs with nobody chatting.
+    The webhook URL never passes through the chat (read from a file on the laptop, stored
+    root-only on the server, given to curl with `-K`). Backup age isn't checked: backups live on
+    the laptops. Limit: a server can't report that it is itself down; that needs an outside
+    uptime service.
 77. **Suspend / resume a site** (done in v0.5: `suspend-site.sh`): nginx serves a "temporarily unavailable" page (503) without
     touching the app, unlike `artisan down`, so it works even when the app itself is broken.
 79. **Push-to-deploy** (new, opt-in per site): a push to the site's branch deploys it, through a
@@ -268,9 +272,9 @@ Why this order:
     than add keys: read the prompt, or use a fine-grained token limited to the sites' repos.
 73. **Redirect rules** (new): add, list or remove path redirects (`/old` → `/new`, 301 or 302) in a
     site's nginx config; paths checked against a strict pattern, `nginx -t`, rollback on failure.
-59. **Apply PHP-FPM sizing** (new): write the pool settings from A-58, test with `php-fpm -t`,
+59. **Apply PHP-FPM sizing** (done in v0.6: `pool-size.sh`): write the pool settings from A-58, test with `php-fpm -t`,
     reload, roll back on failure, then check the pool is running.
-64. **Back up uploaded files** (new): the site's `storage/app` (user uploads), which a database
+64. **Back up uploaded files** (done in v0.6: `backup.sh` + `backup-files.sh`): the site's `storage/app` (user uploads), which a database
     backup doesn't cover. With restic (encrypted, only changed files are sent each time), to your
     laptop like C-19.
 65. **Scheduled off-site backups** (**not now**, decision 7: backups will be stored by Servio through its
@@ -313,10 +317,10 @@ Docker rules (in the skill and checked by the scripts):
 31. **Delete a site** (done; **v0.3**: also removes the site's pool and user): nginx config, certificate, deploy key, the site folder. New: also its
     workers, scheduler and (Docker) containers and images. Volumes and databases are kept unless
     you say otherwise.
-74. **Reboot a server** (new): every site on it goes down for a while, so you type the host alias
+74. **Reboot a server** (done in v0.6: `reboot.sh`): every site on it goes down for a while, so you type the host alias
     back. Afterwards it checks that nginx, PHP-FPM, MySQL and the workers came back, and reports
     anything that didn't.
-32. **Restore a database from a backup** (new): takes a fresh backup first automatically, then
+32. **Restore a database from a backup** (done in v0.6: `restore.sh` + `restore-db.sh`): takes a fresh backup first automatically, then
     overwrites the live data. Option: restore into a new database first and switch only when
     you've checked it.
 

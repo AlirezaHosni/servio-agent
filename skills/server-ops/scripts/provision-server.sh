@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # provision-server.sh: turn a fresh Ubuntu 22.04/24.04 server into one that hosts PHP sites.
 #
-#   bash run.sh <host> provision-server.sh [default-php] [more-php...] [--dry-run]
+#   bash run.sh <host> provision-server.sh [default-php] [more-php...] [mysql] [redis] [--dry-run]
 #   bash run.sh web1 provision-server.sh 8.4            one PHP version (8.3, 8.4 or 8.5)
 #   bash run.sh web1 provision-server.sh 8.4 8.3        8.4 is the default, 8.3 installed too
+#   bash run.sh web1 provision-server.sh 8.4 mysql redis   + MySQL 8 and Redis (v0.6; also later)
 #
 # Installs nginx, PHP-FPM (from the ondrej PPA) in every version asked for, Composer, Node.js, git,
 # Supervisor (it runs queue workers later) and a firewall (UFW). Ported from Servio's ProvisionServer.
@@ -21,13 +22,18 @@
 # (network, apt lock...), fix the cause and run it again.
 
 main() {
-    local default_php="${1:-8.4}" versions v
+    local default_php="${1:-8.4}" versions v with_mysql=0 with_redis=0
     validate_php "$default_php"
     versions="$default_php"
     shift || true
+    # After the PHP versions: optional services, by name (mysql, redis).
     for v in "$@"; do
-        validate_php "$v"
-        case " $versions " in *" $v "*) ;; *) versions="$versions $v" ;; esac
+        case "$v" in
+            mysql) with_mysql=1 ;;
+            redis) with_redis=1 ;;
+            *) validate_php "$v"
+               case " $versions " in *" $v "*) ;; *) versions="$versions $v" ;; esac ;;
+        esac
     done
     begin_change "server" "$default_php" "$@"
 
@@ -61,7 +67,7 @@ main() {
 
     step "Installing base packages"
     apt_get update
-    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor gnupg
+    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor gnupg age
 
     step "Adding the ondrej/php package source"
     if ! grep -rqs "ondrej/php" /etc/apt/sources.list.d/; then
@@ -133,6 +139,21 @@ main() {
     step "Supervisor (it will run the sites' queue workers)"
     run systemctl enable --now supervisor
 
+    if [ "$with_mysql" -eq 1 ]; then
+        step "MySQL 8 (Ubuntu's package)"
+        # Ubuntu's MySQL listens on 127.0.0.1 only and lets the OS root user in through its socket
+        # (auth_socket): scripts run `mysql` as root with no password anywhere. Sites get their
+        # own users and passwords (database.sh).
+        apt_get install mysql-server
+        run systemctl enable --now mysql
+    fi
+    if [ "$with_redis" -eq 1 ]; then
+        step "Redis"
+        # Ubuntu's Redis listens on 127.0.0.1 and ::1 with protected mode on: nothing from outside.
+        apt_get install redis-server
+        run systemctl enable --now redis-server
+    fi
+
     step "Starting nginx"
     # The sites' access-log format with the request time (traffic.sh reads it).
     ensure_log_format
@@ -172,6 +193,18 @@ main() {
     done
     if COMPOSER_ALLOW_SUPERUSER=1 composer --version >/dev/null 2>&1; then check_pass "Composer works"; else check_fail "Composer works"; fi
     if npm --version >/dev/null 2>&1; then check_pass "Node.js and npm work" "$(node -v)"; else check_fail "Node.js and npm work"; fi
+    # Databases must answer, and only on this server (security-check checks the same ports).
+    local listen
+    if [ "$with_mysql" -eq 1 ]; then
+        if systemctl is-active --quiet mysql && mysql -e 'SELECT 1' >/dev/null 2>&1; then check_pass "MySQL running" "$(mysql -N -e 'SELECT VERSION()' 2>/dev/null)"; else check_fail "MySQL running"; fi
+        listen="$(ss -Hltn 2>/dev/null | awk '$4 ~ /:3306$/ { print $4 }' | tr '\n' ' ')"
+        if [ -n "$listen" ] && ! printf '%s' "$listen" | grep -qE '(^| )(0\.0\.0\.0|\*|\[::\]):3306'; then check_pass "MySQL only on this server" "$listen"; else check_fail "MySQL only on this server" "${listen:-not listening}"; fi
+    fi
+    if [ "$with_redis" -eq 1 ]; then
+        if [ "$(redis-cli ping 2>/dev/null)" = "PONG" ]; then check_pass "Redis running"; else check_fail "Redis running"; fi
+        listen="$(ss -Hltn 2>/dev/null | awk '$4 ~ /:6379$/ { print $4 }' | tr '\n' ' ')"
+        if [ -n "$listen" ] && ! printf '%s' "$listen" | grep -qE '(^| )(0\.0\.0\.0|\*|\[::\]):6379'; then check_pass "Redis only on this server" "$listen"; else check_fail "Redis only on this server" "${listen:-not listening}"; fi
+    fi
     check_summary || die "Provisioning finished, but something isn't right (see above)."
 
     step "Done"
