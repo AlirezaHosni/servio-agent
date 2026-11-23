@@ -8,7 +8,7 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.2.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.3.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -145,10 +145,19 @@ a session with the plugin installed after changing the skill's description.
 
 ## Server layout (shared with Servio)
 
-- user `servio` owns every site and runs PHP-FPM; nginx (`www-data`) is in the `servio` group
-- site: `/home/servio/<domain>`, web root `/home/servio/<domain>/<web-dir>`
-- deploy key: `/home/servio/.ssh/deploy_<domain>` (+ `.pub`)
+- **one Linux user per site** ("website isolation"), named from the domain:
+  `shop.example.com` → `s_shopexamplecom_3f2a1b` (`s_` + up to 16 letters/digits + 6 hex of
+  the domain's SHA-256). One site can't read another's files or `.env`. Inventory shows each
+  site's user
+- site: `/home/<user>/<domain>`, web root `/home/<user>/<domain>/<web-dir>`, its own temp folder
+  `/home/<user>/tmp`; homes are `750`, nginx (`www-data`) reads public files through each
+  site's group
+- PHP-FPM: one pool per site, `/etc/php/<version>/fpm/pool.d/<user>.conf`, running as the site's
+  user, socket `/run/php/php<version>-fpm-<user>.sock`, `pm = ondemand` (no memory while idle).
+  A server can have several PHP versions; each site uses one
+- deploy key: `/home/<user>/.ssh/deploy_key` (+ `.pub`)
 - nginx: `/etc/nginx/sites-available/<domain>`, first line `# Managed by Servio`
 - certificates: `/etc/letsencrypt/live/<domain>/`, renewed by `certbot.timer`
-- custom deploy steps: put `.servio/deploy.sh` in the repository (runs as `servio` in the site
-  folder); otherwise `composer install`, `artisan migrate --force` and `artisan optimize`
+- Supervisor is installed (it will run queue workers)
+- custom deploy steps: put `.servio/deploy.sh` in the repository (runs as the site's user in the
+  site folder); otherwise `composer install`, `artisan migrate --force` and `artisan optimize`

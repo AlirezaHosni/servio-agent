@@ -8,8 +8,8 @@
 # The branch defaults to the branch deployed last time, or "main".
 #
 #   1. as root: check the site folder and its deploy key exist; read the PHP version from nginx
-#   2. as servio: fetch the branch with the site's deploy key, check it out
-#   3. as servio: run the deploy steps in the site folder: the repo's own .servio/deploy.sh if
+#   2. as the site's user: fetch the branch with the site's deploy key, check it out
+#   3. as the site's user: run the deploy steps in the site folder: the repo's own .servio/deploy.sh if
 #      it has one, otherwise the default Laravel steps below
 #   4. as root: reload PHP-FPM (clears OPcache, so PHP runs the NEW code)
 #   5. check the result: the site answers without a server error (item 52)
@@ -18,7 +18,8 @@
 # --dry-run: asks the repository which commit the branch points to and shows it next to the
 # commit that is live now; nothing is fetched into the site, nothing runs.
 #
-# Steps 2 and 3 run as servio, not root: the files must belong to the user PHP-FPM runs as, and
+# Steps 2 and 3 run as the site's user, not root: the files must belong to the user its PHP-FPM pool
+# runs as, and
 # the deploy steps run code from the repository, so they get the least power that works.
 # In-place deploy: the site is briefly a mix of old and new files while it updates
 # (release folders with an instant switch come in v0.5).
@@ -30,7 +31,8 @@ main() {
     validate_domain "$domain"
     begin_change "$domain" "$@"
 
-    local dir deploy_key script_file live remote scheme
+    local user dir deploy_key script_file live remote scheme
+    user="$(site_user "$domain")"
     dir="$(site_dir "$domain")"
     deploy_key="$(deploy_key_path "$domain")"
 
@@ -41,29 +43,30 @@ main() {
     read_site_settings "$domain"
 
     if [ -z "$repository" ] && [ -d "$dir/.git" ]; then
-        repository="$(runuser -u "$SITE_USER" -- git -C "$dir" remote get-url origin 2>/dev/null || true)"
+        repository="$(runuser -u "$user" -- git -C "$dir" remote get-url origin 2>/dev/null || true)"
     fi
     [ -n "$repository" ] || die_input "First deploy of $domain: pass the repository, e.g. git@github.com:owner/repo.git"
     validate_repository "$repository"
 
     if [ -z "$branch" ] && [ -d "$dir/.git" ]; then
-        branch="$(runuser -u "$SITE_USER" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        branch="$(runuser -u "$user" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     fi
     [ -n "$branch" ] && [ "$branch" != "HEAD" ] || branch="main"
     validate_branch "$branch"
     lock_site "$domain"
     echo "OK: $repository ($branch), PHP $SITE_PHP"
 
-    # Everything git does runs AS servio (runuser -u), with the site's own deploy key.
+    # Everything git does runs AS the site's user (runuser -u), with the site's own deploy key.
     #   IdentitiesOnly: use only this key.  accept-new: trust the git host's key the first time
     #   and pin it in ~/.ssh/known_hosts (Trust On First Use).
     #   BatchMode: never ask for a passphrase or password, fail instead.
-    export GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+    #   UserKnownHostsFile: the site user's own, also when root's environment is kept (dry run).
+    export GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o UserKnownHostsFile=$(site_home "$domain")/.ssh/known_hosts"
 
     if dry_run; then
         step "What would be deployed"
-        live="$( [ -d "$dir/.git" ] && runuser -u "$SITE_USER" -- git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo "nothing deployed yet")"
-        remote="$(runuser -u "$SITE_USER" --preserve-environment -- git ls-remote "$repository" "refs/heads/$branch" 2>&1 | head -n 1 || true)"
+        live="$( [ -d "$dir/.git" ] && runuser -u "$user" -- git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo "nothing deployed yet")"
+        remote="$(runuser -u "$user" --preserve-environment -- git ls-remote "$repository" "refs/heads/$branch" 2>&1 | head -n 1 || true)"
         if [[ "$remote" =~ ^([0-9a-f]{40})[[:space:]] ]]; then
             remote="${BASH_REMATCH[1]:0:7}"
         else
@@ -77,12 +80,13 @@ main() {
         return 0
     fi
 
-    # The default steps are saved to a temporary file owned by servio, run from there, and
+    # The default steps are saved to a temporary file owned by the site's user, run from there, and
     # deleted when this script ends (the exit hook runs even after a failure).
-    script_file="$(mktemp /tmp/servio-deploy.XXXXXX)"
+    # In the site's own temp folder, not the shared /tmp.
+    script_file="$(mktemp "$(site_home "$domain")/tmp/servio-deploy.XXXXXX")"
     add_exit_hook "rm -f '$script_file'"
     cat > "$script_file" <<'DEPLOY'
-# Runs as the servio user, inside the site's folder, after the new code is checked out.
+# Runs as the site's user, inside the site's folder, after the new code is checked out.
 # Any command that fails stops the deploy.
 composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 
@@ -93,13 +97,13 @@ elif [ -f artisan ]; then
     echo "No .env file yet: skipped migrations and caching. Add .env to the site folder, then deploy again."
 fi
 DEPLOY
-    chown "$SITE_USER:$SITE_USER" "$script_file"
+    chown "$user:$user" "$script_file"
 
     step "Fetching $branch from $repository"
-    # The git part runs in a NEW bash (as servio): only exported variables reach it.
+    # The git part runs in a NEW bash (as the site's user): only exported variables reach it.
     export SITE_DIR="$dir" REPOSITORY="$repository" BRANCH="$branch"
     cd "$dir"
-    runuser -u "$SITE_USER" -- bash -euo pipefail <<'GIT'
+    runuser -u "$user" -- bash -euo pipefail <<'GIT'
 if [ ! -d .git ]; then
     git init -q
     git remote add origin "$REPOSITORY"
@@ -122,10 +126,10 @@ GIT
     step "Running the deploy steps"
     if [ -f "$dir/.servio/deploy.sh" ]; then
         echo "Using the repository's .servio/deploy.sh"
-        runuser -u "$SITE_USER" -- bash -euo pipefail "$dir/.servio/deploy.sh"
+        runuser -u "$user" -- bash -euo pipefail "$dir/.servio/deploy.sh"
     else
         echo "Using the default Laravel steps (add .servio/deploy.sh to the repo to change them)"
-        runuser -u "$SITE_USER" -- bash -euo pipefail "$script_file"
+        runuser -u "$user" -- bash -euo pipefail "$script_file"
     fi
 
     step "Reloading PHP $SITE_PHP-FPM"
@@ -147,7 +151,7 @@ GIT
 
     step "Done"
     # Last line on purpose: the commit that is now live.
-    echo "SERVIO_COMMIT=$(runuser -u "$SITE_USER" -- git -C "$dir" rev-parse HEAD)"
+    echo "SERVIO_COMMIT=$(runuser -u "$user" -- git -C "$dir" rev-parse HEAD)"
 }
 
 servio_run "$@"

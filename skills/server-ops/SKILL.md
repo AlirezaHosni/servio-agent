@@ -6,8 +6,10 @@ description: Ploi-like server work over SSH on the team's Ubuntu servers - list 
 # Server ops (servio-agent)
 
 You manage the team's servers over SSH with the bundled scripts, the same way the Servio
-panel does. Every server follows Servio's conventions: Ubuntu 22.04 or 24.04, a `servio` user
-that owns all sites, sites in `/home/servio/<domain>`, nginx + PHP-FPM, one deploy key per site.
+panel does. Every server follows Servio's conventions: Ubuntu 22.04 or 24.04, nginx, one or
+more PHP versions, Supervisor. **Every site has its own Linux user** (named from the domain,
+like `s_shopexamplecom_3f2a1b`; inventory shows it), lives in `/home/<user>/<domain>`, and has
+its own PHP-FPM pool and deploy key. One site can't read another's files.
 
 ## Use when
 - The user asks what runs on a server, or about a site's state (PHP, HTTPS, deployed commit).
@@ -108,19 +110,22 @@ expiring within 21 days, a missing `.env`, a site not deployed, a service not ac
 For "which servers do we have", ask which host aliases to check; run inventory on each.
 
 ### Provision a server
-1. Ask for the host alias and PHP version (8.3, 8.4 or 8.5; default 8.4). Inventory first: if
-   nginx and the `servio` user already exist, it's provisioned already (re-running repairs).
-2. Dry run: `run.sh <host> provision-server.sh <php> --dry-run`. Show what it would install.
-3. Warn: it enables a firewall (UFW) that allows only SSH, 80 and 443.
-4. OK in chat, then `run.sh <host> provision-server.sh <php> --detach`, and follow it with
+1. Ask for the host alias and the PHP version(s): the first is the default (8.3, 8.4 or 8.5;
+   default 8.4), more can follow (`8.4 8.3`). Inventory first: if nginx is already there, it's
+   provisioned already (re-running repairs it, or adds a PHP version).
+2. Dry run: `run.sh <host> provision-server.sh <php> [more-php] --dry-run`. Show what it would install.
+3. Warn: it enables a firewall (UFW) that allows only SSH (rate-limited: 6+ new connections in
+   30 seconds from one address are blocked for a while), 80 and 443.
+4. OK in chat, then the same with `--detach` instead of `--dry-run`, and follow it with
    `job-status.sh`. It takes several minutes.
 
 ### Create a site
 1. Ask for the host, domain (lowercase, no `http://`), web directory (default `public`) and PHP
    version (must be installed on the server: check the inventory).
-2. Dry run: `run.sh <host> create-site.sh <domain> <web-dir> <php> --dry-run` (shows the nginx
-   config it would write).
-3. OK in chat, then the same without `--dry-run`.
+2. Dry run: `run.sh <host> create-site.sh <domain> <web-dir> <php> --dry-run` (shows the site
+   user it would create, its PHP pool and the nginx config).
+3. OK in chat, then the same without `--dry-run`. Report the site user and PHP version. Changing
+   an existing site's PHP version is refused here: not supported yet.
 4. Show the `SERVIO_DEPLOY_KEY=` public key and tell the user to add it to the repository as a
    **read-only deploy key** (GitHub: repo, Settings, Deploy keys). Only the public half is
    printed; the private half never leaves the server.
@@ -156,6 +161,13 @@ For "which servers do we have", ask which host aliases to check; run inventory o
 2. Ask the user to type the domain to confirm. Wait for their message.
 3. `run.sh <host> delete-site.sh <domain> <what-they-typed>`.
 4. Remind them to remove the deploy key from the repository's settings.
+
+### Fix permissions ("Permission denied" errors)
+1. Dry run: `run.sh <host> fix-permissions.sh <domain> --dry-run`. It counts files with the wrong
+   owner, files other users can access, and the `.env` mode (never its content).
+2. OK in chat, then the same without `--dry-run`: everything back to the site's user, `storage/`
+   and `bootstrap/cache/` writable, `.env` readable only by the site. Never fix permissions with
+   raw `chmod`/`chown`.
 
 ### Follow, check or stop a long job
 - `run.sh <host> job-status.sh` lists the last 10 jobs (script, state, exit code, who).

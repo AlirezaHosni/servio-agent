@@ -71,18 +71,24 @@ PHP, firewall, sites. On a fresh server nginx shows "not installed".
 
 > Provision web1 with PHP 8.4.
 
-Claude shows the command and asks for your OK. Say yes. It installs nginx, PHP 8.4, Composer,
-git, creates the `servio` user and turns on a firewall that allows only SSH, HTTP and HTTPS.
-It takes a few minutes. Safe to run again if it fails halfway.
+Claude first shows a dry run (what it would install), then asks for your OK. Say yes. It installs
+nginx, PHP 8.4, Composer, git and Supervisor, and turns on a firewall that allows only SSH
+(rate-limited), HTTP and HTTPS. It takes a few minutes and runs as a job on the server, so it
+keeps going even if your laptop sleeps. Safe to run again if it fails halfway.
+
+Need another PHP version too? "Provision web1 with PHP 8.4 and 8.3": 8.4 is the default, and each
+site can choose either.
 
 ## 5. Create the site
 
 > Create shop.example.com on web1.
 
-Claude asks what's missing (web directory: `public` for Laravel; PHP version), shows the
-command, and waits for your OK. Afterwards it shows a line like:
+Claude asks what's missing (web directory: `public` for Laravel; PHP version), shows a dry run,
+and waits for your OK. The site gets **its own Linux user**, named from the domain, and its own
+PHP pool, so it can't read your other sites' files. Afterwards it shows lines like:
 
 ```
+Site user: s_shopexamplecom_3f2a1b (PHP 8.4)
 SERVIO_DEPLOY_KEY=ssh-ed25519 AAAA... servio-deploy@shop.example.com
 ```
 
@@ -103,15 +109,18 @@ PHP. On the very first deploy you'll see:
 
 > No .env file yet: skipped migrations and caching.
 
-That's on purpose: **Claude never writes or reads `.env` files.** Create it yourself:
+That's on purpose: **Claude never writes or reads `.env` files.** Create it yourself, as the
+site's user (inventory shows it, e.g. `s_shopexamplecom_3f2a1b`):
 
 ```bash
 ssh web1
-sudo -u servio nano /home/servio/shop.example.com/.env    # paste your settings, save
-sudo -u servio php /home/servio/shop.example.com/artisan key:generate   # if APP_KEY is empty
+U=s_shopexamplecom_3f2a1b                                   # the site's user
+sudo -u $U nano /home/$U/shop.example.com/.env              # paste your settings, save
+sudo -u $U php /home/$U/shop.example.com/artisan key:generate   # if APP_KEY is empty
 ```
 
-Then ask Claude to deploy again: now migrations and `artisan optimize` run too.
+Then ask Claude to "fix permissions for shop.example.com" (it makes `.env` readable only by the
+site), and to deploy again: now migrations and `artisan optimize` run too.
 
 Later deploys are just "deploy shop.example.com": the repository and branch are remembered on
 the server. Want different deploy steps? Add `.servio/deploy.sh` to your repository.
@@ -147,6 +156,8 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 | `Host key verification failed` | first connection, host key unknown | run `ssh web1` by hand once and accept |
 | `sudo: a password is required` | user lacks passwordless sudo | use `root`, or add a `NOPASSWD` sudoers rule |
 | `Permission denied (publickey)` during deploy, from git | the deploy key isn't on the repository | add the `SERVIO_DEPLOY_KEY` line as a deploy key |
+| Laravel: `Permission denied` on `storage/logs` or `bootstrap/cache` | a file was created by another user (often root, via `sudo`) | ask Claude to "fix permissions for <domain>" |
+| `Connection refused` right after several connections | the firewall rate-limits SSH (6+ connections in 30 seconds) | wait 30 seconds; for many quick connections, turn on `ControlMaster auto` + `ControlPersist 60s` for that host in `~/.ssh/config` (one connection is reused) |
 | `http://… doesn't reach this server yet` | DNS not pointing here (yet) | fix the A record, wait, try again |
 | `servio-agent: … touches a .env file` (denied) | the guard stopped a command touching a secret | expected; do that part yourself |
 | `isn't supported yet` | not Ubuntu 22.04/24.04 | use a supported server |

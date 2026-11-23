@@ -40,7 +40,7 @@ main() {
     echo "php:       ${php_list:- none of $PHP_VERSIONS}"
     echo "composer:  $(command -v composer >/dev/null 2>&1 && echo installed || echo missing)"
     echo "certbot:   $(command -v certbot >/dev/null 2>&1 && echo "installed, renewal timer $(systemctl is-active certbot.timer 2>/dev/null || true)" || echo missing)"
-    echo "user:      $SITE_USER $(id "$SITE_USER" >/dev/null 2>&1 && echo exists || echo missing)"
+    echo "supervisor: $(command -v supervisord >/dev/null 2>&1 && systemctl is-active supervisor 2>/dev/null || echo missing)"
     if command -v ufw >/dev/null 2>&1; then
         echo "firewall:  $(ufw status | head -n 1)"
     fi
@@ -77,7 +77,7 @@ sites_report() {
 }
 
 site_report() {
-    local domain="$1" file managed root web_root php cert expires dir commit branch laravel env_file
+    local domain="$1" file managed root web_root php cert expires dir commit branch laravel env_file user user_state pool
 
     file="$(nginx_available "$domain")"
     [ -f "$file" ] || file="$(nginx_enabled "$domain")"
@@ -87,8 +87,18 @@ site_report() {
     [[ "$root" =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] && web_root="$root" || web_root="unknown"
     # `|| true`: a site without PHP (a static or hand-made config) has no socket; grep then
     # "fails", and without it that would stop the whole inventory.
-    php="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm\.sock#\1#' || true)"
+    # The socket is the site's own pool (php8.4-fpm-<user>.sock) or, in a hand-made config, a
+    # shared one (php8.4-fpm.sock).
+    php="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm(-[a-z0-9_]+)?\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm.*#\1#' || true)"
     [ -n "$php" ] || php="none"
+
+    # The site's own Linux user and PHP-FPM pool (decision 6).
+    user="$(site_user "$domain")"
+    if id "$user" >/dev/null 2>&1; then user_state="$user"; else user_state="none (no site user $user)"; fi
+    pool="none"
+    if [ "$php" != "none" ] && [ -f "$(pool_file "$domain" "$php")" ]; then
+        if [ -S "$(pool_socket "$domain" "$php")" ]; then pool="PHP $php, up"; else pool="PHP $php, configured but NOT running"; fi
+    fi
 
     cert="$(certificate_path "$domain")"
     if [ -f "$cert" ]; then
@@ -107,9 +117,9 @@ site_report() {
     commit="not deployed"; branch="-"; laravel="unknown"; env_file="missing"
     if [ -d "$dir/.git" ]; then
         # As the site user: git refuses to read a repo owned by someone else ("dubious ownership").
-        commit="$(runuser -u "$SITE_USER" -- git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        commit="$(runuser -u "$user" -- git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
         [[ "$commit" =~ ^[0-9a-f]{4,40}$ ]] || commit="unknown"
-        branch="$(runuser -u "$SITE_USER" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        branch="$(runuser -u "$user" -- git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
         [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || branch="unknown"
     fi
     if [ -f "$dir/composer.lock" ]; then
@@ -123,7 +133,8 @@ site_report() {
     echo "- $domain"
     echo "    managed:   $managed"
     echo "    web root:  $web_root"
-    echo "    php:       $php"
+    echo "    user:      $user_state"
+    echo "    php:       $php (pool: $pool)"
     echo "    ssl:       $expires"
     echo "    deployed:  $commit (branch $branch)"
     echo "    laravel:   $laravel"

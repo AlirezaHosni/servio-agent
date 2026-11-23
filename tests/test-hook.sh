@@ -29,6 +29,8 @@ check ask   "bash $RUN web1 deploy-site.sh shop.example.com main"
 check ask   "bash $RUN web1 provision-server.sh 8.4 --detach"
 check ask   "bash $RUN web1 delete-site.sh shop.example.com shop.example.com"
 check ask   "bash $RUN web1 job-stop.sh 20261123-140501-a1b2c3"
+check ask   "bash $RUN web1 fix-permissions.sh shop.example.com"
+check allow "bash $RUN web1 fix-permissions.sh shop.example.com --dry-run"
 check ask   "bash $RUN web1 unknown-script.sh"
 if command -v cygpath >/dev/null 2>&1; then
     check allow "bash \"$(cygpath -w "$RUN")\" web1 inventory.sh"     # C:\Users\... on Windows

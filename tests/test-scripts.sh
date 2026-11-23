@@ -16,7 +16,7 @@ skip() { if [ -n "${CI:-}" ]; then bad "skipped in CI: $*"; else echo "skip  $*"
 echo "== Syntax (bash -n), alone and as the server sees it (lib.sh + script)"
 for f in "$S"/*.sh "$ROOT"/hooks/*.sh; do bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"; done
 perl -c "$ROOT/hooks/servio-guard.pl" >/dev/null 2>&1 && ok "perl -c servio-guard.pl" || bad "perl -c servio-guard.pl"
-for s in inventory provision-server create-site deploy-site issue-certificate delete-site job-status job-stop; do
+for s in inventory provision-server create-site deploy-site issue-certificate delete-site fix-permissions job-status job-stop; do
     cat "$S/lib.sh" "$S/$s.sh" | bash -n && ok "lib.sh + $s.sh" || bad "lib.sh + $s.sh"
 done
 
@@ -57,10 +57,33 @@ reject validate_branch 'a b'
 reject validate_public_domain shop.test
 accept validate_public_domain shop.example.com
 
+echo "== Site layout: one Linux user per site (decision 6)"
+su_of() { (source "$S/lib.sh"; site_user "$1"); }
+u="$(su_of shop.example.com)"
+[[ "$u" =~ ^s_[a-z0-9]{0,16}_[0-9a-f]{6}$ ]] && ok "site user looks like s_<letters>_<6 hex>: $u" || bad "site user '$u'"
+[ "$u" = "$(su_of shop.example.com)" ] && ok "the same domain always gives the same user" || bad "site_user isn't stable"
+[ "$u" != "$(su_of shop-example.com)" ] && ok "look-alike domains get different users ($(su_of shop-example.com))" || bad "shop.example.com and shop-example.com share a user"
+long="$(su_of a-very-long-subdomain-name.example.co.uk)"
+[ "${#long}" -le 32 ] && [[ "$long" =~ ^s_ ]] && ok "long domains stay within Linux's 32 characters (${#long}: $long)" || bad "long site user '$long'"
+[[ "$(su_of 1st.example.com)" =~ ^s_1st ]] && ok "a domain starting with a digit still gives a valid name (starts with 's_')" || bad "digit domain"
+layout="$(source "$S/lib.sh"; site_dir shop.example.com; deploy_key_path shop.example.com; pool_file shop.example.com 8.4; pool_socket shop.example.com 8.4)"
+for want in "/home/$u/shop.example.com" "/home/$u/.ssh/deploy_key" "/etc/php/8.4/fpm/pool.d/$u.conf" "/run/php/php8.4-fpm-$u.sock"; do
+    [[ "$layout" == *"$want"* ]] && ok "layout: $want" || bad "layout lacks $want: $layout"
+done
+
+echo "== PHP-FPM pool renderer"
+pool="$(source "$S/lib.sh"; php_pool_config shop.example.com 8.4)"
+for want in "[$u]" "user = $u" "group = $u" "listen = /run/php/php8.4-fpm-$u.sock" "listen.owner = www-data" \
+            "listen.mode = 0660" "pm = ondemand" "pm.max_children = 5" "php_admin_value[upload_tmp_dir] = /home/$u/tmp" \
+            "php_admin_value[session.save_path] = /home/$u/tmp" "security.limit_extensions = .php" "Managed by Servio"; do
+    printf '%s\n' "$pool" | grep -qF -- "$want" && ok "pool has: $want" || bad "pool missing: $want"
+done
+! printf '%s\n' "$pool" | grep -qE '^user = (root|www-data|servio)$' && ok "the pool never runs as root, www-data or a shared user" || bad "pool runs as a shared user"
+
 echo "== nginx config renderer"
-cfg="$(source "$S/lib.sh"; nginx_https_config shop.example.com /home/servio/shop.example.com/public 8.4)"
-for want in '# Managed by Servio' 'server_name shop.example.com;' 'root /home/servio/shop.example.com/public;' \
-            'fastcgi_pass unix:/run/php/php8.4-fpm.sock;' 'try_files $uri $uri/ /index.php?$query_string;' \
+cfg="$(source "$S/lib.sh"; nginx_https_config shop.example.com "/home/$u/shop.example.com/public" 8.4)"
+for want in '# Managed by Servio' 'server_name shop.example.com;' "root /home/$u/shop.example.com/public;" \
+            "fastcgi_pass unix:/run/php/php8.4-fpm-$u.sock;" 'try_files $uri $uri/ /index.php?$query_string;' \
             'return 301 https://$host$request_uri;' 'location ~ ^/index\.php(/|$) {' \
             'fastcgi_split_path_info ^(.+\.php)(/.*)$;' 'fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;' \
             'ssl_certificate_key /etc/letsencrypt/live/shop.example.com/privkey.pem;' 'root /var/www/letsencrypt;' \
@@ -68,15 +91,19 @@ for want in '# Managed by Servio' 'server_name shop.example.com;' 'root /home/se
     printf '%s\n' "$cfg" | grep -qF -- "$want" && ok "https has: $want" || bad "https missing: $want"
 done
 [ "$(printf '%s\n' "$cfg" | grep -c '{')" = "$(printf '%s\n' "$cfg" | grep -c '}')" ] && ok "https braces balance" || bad "https braces don't balance"
-http="$(source "$S/lib.sh"; nginx_http_config shop.example.com /home/servio/shop.example.com/public 8.4)"
+http="$(source "$S/lib.sh"; nginx_http_config shop.example.com "/home/$u/shop.example.com/public" 8.4)"
 printf '%s\n' "$http" | grep -q 'listen 443' && bad "http config has 443" || ok "http config has no 443"
 
 echo "== read_site_settings reads web dir + PHP back from a rendered config"
 tmp="$(mktemp -d)"
 got="$(source "$S/lib.sh"; nginx_available() { echo "$tmp/$1"; }
-       nginx_http_config shop.example.com /home/servio/shop.example.com/dist/public 8.3 > "$tmp/shop.example.com"
+       nginx_http_config shop.example.com "$(site_dir shop.example.com)/dist/public" 8.3 > "$tmp/shop.example.com"
        read_site_settings shop.example.com; echo "$SITE_WEB_DIR $SITE_PHP")"
-[ "$got" = "dist/public 8.3" ] && ok "read back: $got" || bad "read back '$got'"
+[ "$got" = "dist/public 8.3" ] && ok "read back web dir and PHP from the site's own pool socket: $got" || bad "read back '$got'"
+(source "$S/lib.sh"; nginx_available() { echo "$tmp/$1"; }
+ nginx_http_config other.example.com "$(site_dir shop.example.com)/public" 8.4 > "$tmp/other.example.com"
+ read_site_settings other.example.com) >/dev/null 2>&1
+[ $? = 3 ] && ok "a root outside the site's own folder is refused (exit 3)" || bad "root outside the site's folder accepted"
 (source "$S/lib.sh"; nginx_available() { echo "$tmp/$1"; }
  echo "server { root /var/www; }" > "$tmp/hand.example.com"
  read_site_settings hand.example.com) >/dev/null 2>&1
@@ -166,7 +193,7 @@ masked "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijkl" "***" "eyJhbGci"
 masked "random Q2x9ZkPq7LmN4sT8vW1yB6cD3eF5gH0jK" "random ***" "Q2x9"
 kept "SERVIO_DEPLOY_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl servio-deploy@shop.example.com"
 kept "SERVIO_COMMIT=3f2a9c1b7e4d5f60718293a4b5c6d7e8f9012345"
-kept "/home/servio/shop.example.com/releases/20261123120000-3f2a9c1"
+kept "/home/s_shopexamplecom_951623/shop.example.com/releases/20261123120000-3f2a9c1"
 kept "no passwords here: tokens are fine"
 got="$(printf '%s\n' before "-----BEGIN OPENSSH PRIVATE KEY-----" b3BlbnNzaC1rZXktdjE "-----END OPENSSH PRIVATE KEY-----" after | (source "$S/lib.sh"; mask_output))"
 [ "$got" = "$(printf '%s\n' before "[private key hidden]" after)" ] && ok "masks a whole private key block" || bad "key block: $got"
@@ -200,22 +227,27 @@ fi
 echo "== Inventory on a fake server (item 56: fixtures in tests/fixtures/inventory)"
 F="$ROOT/tests/fixtures/inventory"
 srv="$T/srv"
-mkdir -p "$srv/etc/nginx/sites-available" "$srv/etc/nginx/sites-enabled" "$srv/home/servio/.ssh"
-# shop.example.com: managed, HTTPS, deployed from git, Laravel, .env present, deploy key.
+# The new layout (v0.3): /home/<site user>/<domain>. lib.sh works out the paths, pointed at $srv.
+lay() { (source "$S/lib.sh"; HOME_BASE="$srv/home"; PHP_ETC_DIR="$srv/etc/php"; "$@"); }
+shop_dir="$(lay site_dir shop.example.com)"; evil_dir="$(lay site_dir evil.example.com)"
+mkdir -p "$srv/etc/nginx/sites-available" "$srv/etc/nginx/sites-enabled" \
+    "$(dirname "$(lay deploy_key_path shop.example.com)")" "$(dirname "$(lay pool_file shop.example.com 8.4)")"
+# shop.example.com: managed, HTTPS, deployed from git, Laravel, .env present, deploy key, a pool.
 (source "$S/lib.sh"; LETSENCRYPT_DIR="$srv/etc/letsencrypt"
- nginx_https_config shop.example.com "$srv/home/servio/shop.example.com/public" 8.4) > "$srv/etc/nginx/sites-available/shop.example.com"
-mkdir -p "$srv/home/servio/shop.example.com/public" "$srv/etc/letsencrypt/live/shop.example.com"
-cp "$F/shop.composer.lock" "$srv/home/servio/shop.example.com/composer.lock"
-touch "$srv/home/servio/shop.example.com/.env" "$srv/home/servio/.ssh/deploy_shop.example.com.pub"
-( cd "$srv/home/servio/shop.example.com" && git init -q -b main && git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init )
+ nginx_https_config shop.example.com "$shop_dir/public" 8.4) > "$srv/etc/nginx/sites-available/shop.example.com"
+mkdir -p "$shop_dir/public" "$srv/etc/letsencrypt/live/shop.example.com"
+cp "$F/shop.composer.lock" "$shop_dir/composer.lock"
+touch "$shop_dir/.env" "$(lay deploy_key_path shop.example.com).pub"
+lay php_pool_config shop.example.com 8.4 > "$(lay pool_file shop.example.com 8.4)"
+( cd "$shop_dir" && git init -q -b main && git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init )
 # Git Bash turns arguments that look like paths into Windows paths for native programs like
 # openssl: "/CN=…" would become "C:/Program Files/Git/CN=…". Exclude only that argument (file
 # paths must still be converted). Linux ignores this variable.
 MSYS2_ARG_CONV_EXCL="/CN=" openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=shop.example.com" \
     -keyout "$T/test-only.key" -out "$srv/etc/letsencrypt/live/shop.example.com/fullchain.pem" >/dev/null 2>&1
 # evil.example.com: managed, HTTP only, a composer.lock that tries to give the AI instructions.
-(source "$S/lib.sh"; nginx_http_config evil.example.com "$srv/home/servio/evil.example.com/public" 8.3) > "$srv/etc/nginx/sites-available/evil.example.com"
-mkdir -p "$srv/home/servio/evil.example.com"; cp "$F/evil.composer.lock" "$srv/home/servio/evil.example.com/composer.lock"
+(source "$S/lib.sh"; nginx_http_config evil.example.com "$evil_dir/public" 8.3) > "$srv/etc/nginx/sites-available/evil.example.com"
+mkdir -p "$evil_dir"; cp "$F/evil.composer.lock" "$evil_dir/composer.lock"
 # static.example.com: hand-made, no PHP at all. "default": nginx's own, not a Servio site.
 cp "$F/handmade.nginx.conf" "$srv/etc/nginx/sites-available/static.example.com"
 echo "server {}" > "$srv/etc/nginx/sites-available/default"
@@ -223,21 +255,23 @@ for f in shop.example.com evil.example.com static.example.com default; do      #
     cp "$srv/etc/nginx/sites-available/$f" "$srv/etc/nginx/sites-enabled/$f"
 done
 inv="$(source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/inventory.sh")
-       NGINX_DIR="$srv/etc/nginx"; LETSENCRYPT_DIR="$srv/etc/letsencrypt"; SITES_HOME="$srv/home/servio"
-       runuser() { shift 3; "$@"; }                    # runuser -u servio -- cmd  ->  cmd
+       NGINX_DIR="$srv/etc/nginx"; LETSENCRYPT_DIR="$srv/etc/letsencrypt"; HOME_BASE="$srv/home"; PHP_ETC_DIR="$srv/etc/php"
+       runuser() { shift 3; "$@"; }                    # runuser -u <user> -- cmd  ->  cmd
+       id() { [ "$1" = "$(site_user shop.example.com)" ]; }   # only shop.example.com's user exists
        sites_report 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "inventory's site report runs to the end (exit 0)" || bad "sites_report exit $rc: $inv"
 section() { printf '%s\n' "$inv" | sed -n "/^- $1\$/,/^\$/p"; }
 shop="$(section shop.example.com)"
-for want in "managed:   yes" "php:       8.4" "ssl:       HTTPS, certificate valid until" "(branch main)" "laravel:   13.2.1" ".env:      present" "deploy key: present"; do
+for want in "managed:   yes" "user:      $(lay site_user shop.example.com)" "php:       8.4 (pool: PHP 8.4, configured but NOT running)" "ssl:       HTTPS, certificate valid until" "(branch main)" "laravel:   13.2.1" ".env:      present" "deploy key: present"; do
     [[ "$shop" == *"$want"* ]] && ok "shop.example.com: $want" || bad "shop.example.com lacks '$want': $shop"
 done
 [[ "$shop" =~ deployed:\ +[0-9a-f]{7} ]] && ok "shop.example.com: deployed commit shown as a short hash" || bad "no commit hash: $shop"
 evil="$(section evil.example.com)"
 [[ "$evil" == *"laravel:   not a Laravel app (or unknown)"* && "$evil" != *IGNORE* ]] \
     && ok "evil.example.com: an injected 'version' never reaches the output" || bad "injection got through: $evil"
-[[ "$evil" == *"ssl:       HTTP only (no certificate)"* && "$evil" == *".env:      missing"* && "$evil" == *"deployed:  not deployed"* ]] \
-    && ok "evil.example.com: HTTP only, no .env, not deployed" || bad "evil.example.com: $evil"
+[[ "$evil" == *"ssl:       HTTP only (no certificate)"* && "$evil" == *".env:      missing"* && "$evil" == *"deployed:  not deployed"* \
+   && "$evil" == *"user:      none (no site user"* && "$evil" == *"(pool: none)"* ]] \
+    && ok "evil.example.com: HTTP only, no .env, not deployed, no site user, no pool" || bad "evil.example.com: $evil"
 static="$(section static.example.com)"
 [[ "$static" == *"managed:   no (hand-made config)"* && "$static" == *"php:       none"* ]] \
     && ok "static.example.com: hand-made, no PHP (and the inventory didn't stop on it)" || bad "static.example.com: $static"

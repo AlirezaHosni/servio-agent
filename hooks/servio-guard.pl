@@ -26,7 +26,7 @@ use File::Basename qw(dirname);
 use File::Spec;
 
 my @READ_ONLY = qw(inventory.sh job-status.sh);
-my @CHANGES   = qw(provision-server.sh create-site.sh deploy-site.sh issue-certificate.sh delete-site.sh job-stop.sh);
+my @CHANGES   = qw(provision-server.sh create-site.sh deploy-site.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-stop.sh);
 my $MAX_LEN   = 20000;   # longer commands aren't checked: asked instead (and no slow regexes)
 
 sub decide {

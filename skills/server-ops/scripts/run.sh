@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$SCRIPTS_DIR/../../../.claude-plugin/plugin.json"
-ALLOWED="inventory.sh provision-server.sh create-site.sh deploy-site.sh issue-certificate.sh delete-site.sh job-status.sh job-stop.sh"
+ALLOWED="inventory.sh provision-server.sh create-site.sh deploy-site.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-status.sh job-stop.sh"
 # Long scripts run as a job on the server (item 45): a dropped connection doesn't stop them.
 LONG="provision-server.sh deploy-site.sh issue-certificate.sh"
 

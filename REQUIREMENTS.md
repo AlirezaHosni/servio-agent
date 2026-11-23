@@ -20,14 +20,14 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 |---|---|---|
 | **v0.1.1** | Prove v0.1 on a real server | none new: run v0.1 (inventory, provision, create site, deploy, SSL, delete) on a throwaway Ubuntu 22.04 **and** 24.04 VPS with a real domain; fix what breaks. Quick wins: 36 (strict host keys), 44 (never wait for input) |
 | **v0.2** ✅ built (not yet run on a real server) | Safety base | **Scripts:** 40 action log · 45 long jobs · 48 dry run · 49 four results · 50 exit codes · 51 safe file changes · 52 check the result · 68 masking · 69 site lock. **Hook:** 39 proof-based hook · 43 secrets backstop. **Rules:** 38 no blind re-run · 54 declare scope · 70 approval scope · 84 files outside Claude's context. **Quality:** 55 skill checks · 56 fixture tests · 66 basic CI |
-| **v0.3** | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
+| **v0.3** ✅ built (not yet run on a real server; Servio panel still to do) | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
 | **v0.4** | See everything (read-only) | 2 all servers · 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 61 TLS from outside · 62 nginx review · 78 server logs · 46–47 runbooks |
 | **v0.5** | Laravel deploys | 11–12 project check · 8 what would deploy · 15 deploy with release folders, health check, npm build, worker restart · 16 rollback · 72 deploy history · 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · 75 project linking · 77 suspend / resume · 73 redirects · 14 domains added later · 17 HSTS and certificate check |
 | **v0.6** | Data and server care | 18 database setup · 19 database backup to the laptop · 64 file backup · 32 restore (destructive) · 23 change PHP version · 59 apply PHP-FPM sizing · 24 firewall · 25 package updates · 53 harden a server · 74 reboot · 76 alerts |
 | **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
 | **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
 | **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
-| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) |
+| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` |
 
 Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
 size needs it; anything mainly useful for big teams is asked about first, not built by default.
@@ -135,12 +135,12 @@ Why this order:
 
 ## C. Changes (your OK in chat first)
 
-13. **Provision a server** (done): nginx, PHP-FPM, Composer, git, the `servio` user, and a firewall
+13. **Provision a server** (done; **v0.3**: several PHP versions, Supervisor, `ufw limit`, no shared `servio` user): nginx, PHP-FPM, Composer, git, and a firewall
     allowing only SSH, HTTP and HTTPS. New options: MySQL, Redis, Node.js (for builds). New: SSH
     is allowed with `ufw limit` (blocks an IP after too many connection attempts). New (decisions):
     **Supervisor** for workers (decision 2); a **default PHP version** plus more versions installed on
     request (decision 1); **no shared `servio` site user** any more: each site gets its own user (decision 6).
-14. **Create a site** (done): folder, nginx config, deploy key made on the server (only the public
+14. **Create a site** (done; **v0.3**: own user, home, PHP-FPM pool; extra domains still to do): folder, nginx config, deploy key made on the server (only the public
     half shown). New (decision 6, **one Linux user per site**): the site gets its own Linux user (a short
     name from the domain plus a hash, max 32 characters, e.g. `s_shopexample_3f2a`), its folder
     `/home/<user>/<domain>`, its deploy key in that user's `~/.ssh`, and **its own PHP-FPM pool**
@@ -211,7 +211,7 @@ Why this order:
     updates (unattended-upgrades). **Automatic reboot is off** unless you turn it on for a server.
     Composer packages are **not** updated on servers: run `composer update` locally, commit
     `composer.lock`, deploy.
-26. **Fix permissions** (new): site files owned by the site's own user (decision 6); `storage` and `bootstrap/cache`
+26. **Fix permissions** (**done, v0.3**: fix-permissions.sh): site files owned by the site's own user (decision 6); `storage` and `bootstrap/cache`
     writable. For the usual "permission denied" errors, without free-form `chmod`/`chown`.
 53. **Harden a server** (new), each step checked before the next, so nobody is locked out:
     - **SSH:** a config file named `00-servio.conf` in `sshd_config.d` (sshd uses the first value
@@ -257,6 +257,15 @@ Why this order:
     Cloudflare proxy on is a separate step that also sets SSL mode to "Full (strict)". The
     Cloudflare API token is limited to "DNS edit" on the chosen zones, kept in a `0600` file on
     the laptop and read by the script only: never in the chat or Claude's environment.
+85. **Add the deploy key to GitHub for you** (**later, if needed**: added 2026-11-23): after
+    `create-site.sh` prints `SERVIO_DEPLOY_KEY=…`, a laptop-side script adds it to the site's repo
+    with GitHub's CLI (`gh repo deploy-key add … --title servio-deploy@<domain>`), **read-only**
+    (never `--allow-write`), then checks it with `gh repo deploy-key list`; `delete-site.sh` offers
+    to remove it from the repo. The script accepts only a public key (`ssh-ed25519 …`) and a
+    valid `owner/repo`; the guard asks before it runs. Saves one copy-paste per new site: the
+    deploy key belongs to the site, not a person, so teammates never add keys themselves.
+    Not through Composio (read-only by the team's rule). `gh` logged in as you can do far more
+    than add keys: read the prompt, or use a fine-grained token limited to the sites' repos.
 73. **Redirect rules** (new): add, list or remove path redirects (`/old` → `/new`, 301 or 302) in a
     site's nginx config; paths checked against a strict pattern, `nginx -t`, rollback on failure.
 59. **Apply PHP-FPM sizing** (new): write the pool settings from A-58, test with `php-fpm -t`,
@@ -301,7 +310,7 @@ Docker rules (in the skill and checked by the scripts):
 
 ## E. Destructive (your OK and the domain typed back)
 
-31. **Delete a site** (done): nginx config, certificate, deploy key, the site folder. New: also its
+31. **Delete a site** (done; **v0.3**: also removes the site's pool and user): nginx config, certificate, deploy key, the site folder. New: also its
     workers, scheduler and (Docker) containers and images. Volumes and databases are kept unless
     you say otherwise.
 74. **Reboot a server** (new): every site on it goes down for a while, so you type the host alias

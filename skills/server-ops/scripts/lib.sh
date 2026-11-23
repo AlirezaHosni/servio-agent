@@ -4,8 +4,10 @@
 # Ported from Servio (app/Recipes/Recipe.php, app/Rules/Domain.php, app/Services/Sites/NginxConfig.php).
 # The server conventions are the same as Servio's, so a server set up by this plugin can be
 # adopted by Servio later:
-#   - one Linux user, "servio", owns every site and runs PHP-FPM  (v0.3 changes this to one user per site)
-#   - a site lives in /home/servio/<domain>, its deploy key in /home/servio/.ssh/deploy_<domain>
+#   - every site has its OWN Linux user (decision 6, "website isolation"), named from the domain:
+#     shop.example.com -> s_shopexamplecom_3f2a1b (see site_user)
+#   - a site lives in /home/<user>/<domain>, its deploy key in /home/<user>/.ssh/deploy_key
+#   - every site has its own PHP-FPM pool running as its user, with its own socket
 #   - nginx configs start with "# Managed by Servio" (we never overwrite a config without it)
 #
 # Never run this file on its own. run.sh sends: a few SERVIO_* lines, this file, the script.
@@ -31,8 +33,8 @@ export GIT_TERMINAL_PROMPT=0 COMPOSER_NO_INTERACTION=1
 : "${SERVIO_SCRIPT_NAME:=unknown}" "${SERVIO_SCRIPT_SHA256:=unknown}"
 : "${SERVIO_PLUGIN_VERSION:=unknown}" "${SERVIO_APPROVAL:=fresh}" "${SERVIO_JOB_MODE:=follow}"
 
-SITE_USER="servio"
-SITES_HOME="/home/servio"
+HOME_BASE="/home"                # site users' home folders: /home/<user>
+PHP_ETC_DIR="/etc/php"           # PHP's config: /etc/php/<version>/fpm/pool.d/<user>.conf
 PHP_VERSIONS="8.3 8.4 8.5"
 UBUNTU_VERSIONS="22.04 24.04"
 ACME_ROOT="/var/www/letsencrypt"
@@ -345,8 +347,28 @@ validate_public_domain() {
     esac
 }
 
-site_dir() { echo "$SITES_HOME/$1"; }
-deploy_key_path() { echo "$SITES_HOME/.ssh/deploy_$1"; }
+# ---------------------------------------------------------------------------------------------
+# The site layout (decision 6): one Linux user per site, so a hacked site can't read the others'
+# files or .env. The user's name comes FROM THE DOMAIN, always the same way, so every script can
+# work it out without a database:
+#   s_  + the domain's letters and digits (first 16)  + _ + the first 6 hex of its SHA-256
+#   shop.example.com  ->  s_shopexamplecom_3f2a1b       (the hash keeps similar domains apart:
+#   shop-example.com  ->  s_shopexamplecom_9c0d4e        same letters, different user)
+# Max 2 + 16 + 1 + 6 = 25 characters (Linux allows 32), always starts with a letter.
+# ---------------------------------------------------------------------------------------------
+SITE_USER_PATTERN='^s_[a-z0-9]{0,16}_[0-9a-f]{6}$'
+site_user() {
+    local slug hash
+    slug="$(printf '%s' "$1" | tr -cd 'a-z0-9' | cut -c1-16)"
+    hash="$(printf '%s' "$1" | sha256sum | cut -c1-6)"
+    echo "s_${slug}_${hash}"
+}
+site_home() { echo "$HOME_BASE/$(site_user "$1")"; }
+site_dir() { echo "$(site_home "$1")/$1"; }
+deploy_key_path() { echo "$(site_home "$1")/.ssh/deploy_key"; }
+# The site's PHP-FPM pool ($1 domain, $2 PHP version): its config file and its socket.
+pool_file() { echo "$PHP_ETC_DIR/$2/fpm/pool.d/$(site_user "$1").conf"; }
+pool_socket() { echo "/run/php/php$2-fpm-$(site_user "$1").sock"; }
 nginx_available() { echo "$NGINX_DIR/sites-available/$1"; }
 nginx_enabled() { echo "$NGINX_DIR/sites-enabled/$1"; }
 certificate_path() { echo "$LETSENCRYPT_DIR/live/$1/fullchain.pem"; }
@@ -365,14 +387,16 @@ require_managed_config() {
 # Not "echo and capture": a die inside $(...) would only end the subshell and lose its exit code.
 SITE_WEB_DIR="" SITE_PHP=""
 read_site_settings() {
-    local domain="$1" file root
+    local domain="$1" file root dir
     file="$(nginx_available "$domain")"
+    dir="$(site_dir "$domain")"
     [ -f "$file" ] || die_state "No nginx config for $domain at $file. Create the site first."
     require_managed_config "$domain"
-    root="$(awk -v prefix="$SITES_HOME/$domain/" '$1 == "root" && index($2, prefix) == 1 { sub(/;$/, "", $2); print $2; exit }' "$file")"
-    [ -n "$root" ] || die_state "Couldn't find the site's root line in $file."
-    SITE_WEB_DIR="${root#"$SITES_HOME/$domain/"}"
-    SITE_PHP="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm\.sock#\1#' || true)"
+    root="$(awk -v prefix="$dir/" '$1 == "root" && index($2, prefix) == 1 { sub(/;$/, "", $2); print $2; exit }' "$file")"
+    [ -n "$root" ] || die_state "Couldn't find the site's root line in $file (or it isn't in $dir)."
+    SITE_WEB_DIR="${root#"$dir/"}"
+    # The site's own pool socket: /run/php/php<version>-fpm-<user>.sock
+    SITE_PHP="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm-[a-z0-9_]+\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm-.*#\1#' || true)"
     validate_web_dir "$SITE_WEB_DIR"
     validate_php "$SITE_PHP"
 }
@@ -426,7 +450,7 @@ nginx_site_block() {
 
     # Only index.php is ever executed, never another .php file someone uploads.
     location ~ ^/index\.php(/|\$) {
-        fastcgi_pass unix:/run/php/php$3-fpm.sock;
+        fastcgi_pass unix:$(pool_socket "$1" "$3");
         fastcgi_split_path_info ^(.+\.php)(/.*)\$;
         include fastcgi_params;
         # \$realpath_root: the real folder behind a symlink (zero-downtime deploys later).
@@ -532,6 +556,76 @@ apply_nginx_config() {
     [ -z "$old" ] || rm -f "$old"
     # reload, not restart: nginx re-reads its configs without dropping open connections.
     systemctl reload nginx
+}
+
+# ---------------------------------------------------------------------------------------------
+# The site's PHP-FPM pool, in ONE place (like the nginx config). $1 domain, $2 PHP version.
+#   - runs as the site's own user and group: PHP can read and write the site's files, and
+#     nothing of any other site
+#   - its own socket; nginx (www-data) may talk to it (listen.owner / listen.group)
+#   - pm = ondemand: no PHP process runs until a request comes, and idle ones stop after 10 s,
+#     so many small sites cost almost no memory. pm.max_children caps it (sizing: v0.6)
+#   - its own temp folder for uploads, temp files and sessions, never a shared /tmp
+#   - security.limit_extensions: only .php files are ever executed
+# ---------------------------------------------------------------------------------------------
+php_pool_config() {
+    local user home
+    user="$(site_user "$1")"
+    home="$(site_home "$1")"
+    cat <<POOL
+; $MANAGED_HEADER. The PHP-FPM pool of $1. Changes made by hand are overwritten.
+[$user]
+user = $user
+group = $user
+listen = $(pool_socket "$1" "$2")
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+pm = ondemand
+pm.max_children = 5
+pm.process_idle_timeout = 10s
+pm.max_requests = 500
+
+php_admin_value[upload_tmp_dir] = $home/tmp
+php_admin_value[sys_temp_dir] = $home/tmp
+php_admin_value[session.save_path] = $home/tmp
+security.limit_extensions = .php
+POOL
+}
+
+# Put the pool in place, test it with php-fpm -t, undo it if PHP rejects it, then reload that
+# PHP version (a reload starts the new pool without stopping the other sites' requests).
+apply_pool_config() {
+    local domain="$1" php="$2" file new old=""
+    file="$(pool_file "$domain" "$php")"
+    new="$(mktemp)"
+    php_pool_config "$domain" "$php" > "$new"
+    if dry_run; then
+        write_file "$file" 644 root:root < "$new"
+        echo "[dry-run] would test it with php-fpm$php -t (undone if PHP rejects it) and reload PHP $php-FPM"
+        rm -f "$new"
+        return 0
+    fi
+    if [ -f "$file" ]; then old="$(mktemp)"; cp -p "$file" "$old"; fi
+    write_file "$file" 644 root:root < "$new"
+    rm -f "$new"
+    if ! "php-fpm$php" -t 2>&1; then
+        echo "PHP-FPM rejected the pool. Undoing it, so the other sites keep working." >&2
+        if [ -n "$old" ]; then cp -p "$old" "$file"; rm -f "$old"; else rm -f "$file"; fi
+        die "php-fpm$php -t failed for $domain's pool (the previous state is back)."
+    fi
+    [ -z "$old" ] || rm -f "$old"
+    systemctl reload "php$php-fpm"
+}
+
+# PHP versions that have a pool file for this site (normally exactly one).
+site_pool_versions() {
+    local v found=""
+    for v in $PHP_VERSIONS; do
+        [ -f "$(pool_file "$1" "$v")" ] && found="$found $v"
+    done
+    echo "${found# }"
 }
 
 # ---------------------------------------------------------------------------------------------

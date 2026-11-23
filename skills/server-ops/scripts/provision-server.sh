@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # provision-server.sh: turn a fresh Ubuntu 22.04/24.04 server into one that hosts PHP sites.
 #
-#   bash run.sh <host> provision-server.sh [php-version] [--dry-run]   (default 8.4; 8.3, 8.4 or 8.5)
+#   bash run.sh <host> provision-server.sh [default-php] [more-php...] [--dry-run]
+#   bash run.sh web1 provision-server.sh 8.4            one PHP version (8.3, 8.4 or 8.5)
+#   bash run.sh web1 provision-server.sh 8.4 8.3        8.4 is the default, 8.3 installed too
 #
-# Installs nginx, PHP-FPM (from the ondrej PPA), Composer, git, a firewall (UFW), and the
-# `servio` user that owns every site and runs PHP-FPM. Ported from Servio's ProvisionServer.
-# Then checks the result: nginx and PHP-FPM running, the firewall on with SSH allowed (item 52).
+# Installs nginx, PHP-FPM (from the ondrej PPA) in every version asked for, Composer, git,
+# Supervisor (it runs queue workers later) and a firewall (UFW). Ported from Servio's ProvisionServer.
+# Sites are NOT run by a shared user any more: create-site.sh gives each site its own Linux user
+# and PHP-FPM pool (decision 6). Each PHP version's default "www" pool is set to start no
+# process until it's used, so an unused version costs no memory.
+# Then checks the result: nginx, every PHP-FPM version and Supervisor running, the firewall on
+# with SSH allowed (item 52).
 #
+# Run it again with another version (provision-server.sh 8.4 8.5) to add that version later.
 # --dry-run: checks the server (Ubuntu version, SSH port) and lists what would be installed or
 # changed; installs nothing.
 #
@@ -14,9 +21,15 @@
 # (network, apt lock...), fix the cause and run it again.
 
 main() {
-    local php_version="${1:-8.4}"
-    validate_php "$php_version"
-    begin_change "server" "$@"
+    local default_php="${1:-8.4}" versions v
+    validate_php "$default_php"
+    versions="$default_php"
+    shift || true
+    for v in "$@"; do
+        validate_php "$v"
+        case " $versions " in *" $v "*) ;; *) versions="$versions $v" ;; esac
+    done
+    begin_change "server" "$default_php" "$@"
 
     # apt waits up to 10 minutes for the dpkg lock instead of failing at once: a fresh cloud
     # server often runs unattended-upgrades in its first minutes.
@@ -42,12 +55,13 @@ main() {
     ssh_ports="$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' | sort -u | tr '\n' ' ' || true)"
     [[ "$ssh_ports" =~ ^([0-9]{1,5}\ )+$ ]] || die_state "Couldn't read the SSH port from 'sshd -T'. Not touching the firewall."
     echo "SSH listens on port(s): $ssh_ports"
+    echo "PHP: $versions (default $default_php)"
     # A server-wide change: one at a time (the same lock mechanism as sites, named "server").
     lock_site "server"
 
     step "Installing base packages"
     apt_get update
-    apt_get install software-properties-common ca-certificates curl git unzip ufw
+    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor
 
     step "Adding the ondrej/php package source"
     if ! grep -rqs "ondrej/php" /etc/apt/sources.list.d/; then
@@ -57,13 +71,15 @@ main() {
     fi
     apt_get update
 
-    step "Installing nginx and PHP $php_version"
-    apt_get install nginx \
-        "php$php_version-fpm" "php$php_version-cli" "php$php_version-mysql" "php$php_version-sqlite3" \
-        "php$php_version-mbstring" "php$php_version-xml" "php$php_version-curl" "php$php_version-zip" \
-        "php$php_version-bcmath" "php$php_version-intl" "php$php_version-gd"
-    # `php` on the command line = this version (the PPA may have installed others).
-    run update-alternatives --set php "/usr/bin/php$php_version"
+    step "Installing nginx and PHP $versions"
+    local packages=(nginx)
+    for v in $versions; do
+        packages+=("php$v-fpm" "php$v-cli" "php$v-mysql" "php$v-sqlite3" "php$v-mbstring" "php$v-xml"
+                   "php$v-curl" "php$v-zip" "php$v-bcmath" "php$v-intl" "php$v-gd")
+    done
+    apt_get install "${packages[@]}"
+    # `php` on the command line = the default version (several may be installed).
+    run update-alternatives --set php "/usr/bin/php$default_php"
 
     step "Installing Composer"
     if command -v composer >/dev/null 2>&1; then
@@ -85,33 +101,31 @@ main() {
         rm -f /tmp/composer-setup.php
     fi
 
-    step "Creating the $SITE_USER user (owns all sites)"
-    if id "$SITE_USER" >/dev/null 2>&1; then
-        echo "Already exists."
-    else
-        run useradd --create-home --shell /bin/bash "$SITE_USER"
-    fi
-    # nginx runs as www-data and must read the sites' static files in /home/servio (a 750
-    # folder): putting it in the servio group gives it read access, nothing more.
-    run usermod -aG "$SITE_USER" www-data
+    step "PHP-FPM: the default pools use no memory until needed"
+    # Every site gets its own pool (create-site.sh). PHP-FPM refuses to start with NO pool at
+    # all, so each version keeps its default "www" pool, but switched to "ondemand": it starts
+    # no process until a request comes, and nginx never sends it any.
+    for v in $versions; do
+        run sed -i -E 's/^pm = .*/pm = ondemand/' "$PHP_ETC_DIR/$v/fpm/pool.d/www.conf"
+        run systemctl enable "php$v-fpm"
+        run systemctl restart "php$v-fpm"
+    done
 
-    step "Running PHP-FPM as $SITE_USER"
-    # PHP then owns the same files as the user who deploys them (no permission fights).
-    # listen.owner stays www-data, so nginx can still talk to the PHP-FPM socket.
-    local pool="/etc/php/$php_version/fpm/pool.d/www.conf"
-    run sed -i -E "s/^user = .*/user = $SITE_USER/; s/^group = .*/group = $SITE_USER/" "$pool"
-    run systemctl enable "php$php_version-fpm"
-    run systemctl restart "php$php_version-fpm"
+    step "Supervisor (it will run the sites' queue workers)"
+    run systemctl enable --now supervisor
 
     step "Starting nginx"
     if ! dry_run; then nginx -t 2>&1; fi
     run systemctl enable nginx
     run systemctl restart nginx
 
-    step "Firewall: allow SSH (port $ssh_ports), HTTP and HTTPS, block the rest"
+    step "Firewall: SSH (port $ssh_ports, rate-limited), HTTP and HTTPS, block the rest"
     # SSH FIRST. Enabling UFW without it would lock everyone out.
+    # `limit` instead of `allow`: an address that opens 6+ SSH connections within 30 seconds is
+    # blocked for a while (slows down password guessing). Normal use, scripts included, stays
+    # well below that.
     local port
-    for port in $ssh_ports; do run ufw allow "$port/tcp"; done
+    for port in $ssh_ports; do run ufw limit "$port/tcp"; done
     run ufw allow 80/tcp
     run ufw allow 443/tcp
     run ufw --force enable
@@ -123,13 +137,16 @@ main() {
 
     step "Checking the result"
     if systemctl is-active --quiet nginx; then check_pass "nginx running"; else check_fail "nginx running"; fi
-    if systemctl is-active --quiet "php$php_version-fpm"; then check_pass "PHP $php_version-FPM running"; else check_fail "PHP $php_version-FPM running"; fi
+    for v in $versions; do
+        if systemctl is-active --quiet "php$v-fpm"; then check_pass "PHP $v-FPM running"; else check_fail "PHP $v-FPM running"; fi
+    done
+    if systemctl is-active --quiet supervisor; then check_pass "Supervisor running"; else check_fail "Supervisor running"; fi
     if ufw status | grep -q "^Status: active"; then check_pass "firewall on"; else check_fail "firewall on"; fi
     for port in $ssh_ports; do
-        if ufw status | grep -qE "^$port/tcp[[:space:]]+ALLOW"; then
-            check_pass "SSH port $port allowed"
+        if ufw status | grep -qE "^$port/tcp[[:space:]]+(LIMIT|ALLOW)"; then
+            check_pass "SSH port $port open (rate-limited)"
         else
-            check_fail "SSH port $port allowed" "you could be locked out: allow it before closing this session"
+            check_fail "SSH port $port open" "you could be locked out: allow it before closing this session"
         fi
     done
     if COMPOSER_ALLOW_SUPERUSER=1 composer --version >/dev/null 2>&1; then check_pass "Composer works"; else check_fail "Composer works"; fi
