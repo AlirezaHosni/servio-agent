@@ -16,7 +16,7 @@ skip() { if [ -n "${CI:-}" ]; then bad "skipped in CI: $*"; else echo "skip  $*"
 echo "== Syntax (bash -n), alone and as the server sees it (lib.sh + script)"
 for f in "$S"/*.sh "$ROOT"/hooks/*.sh; do bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"; done
 perl -c "$ROOT/hooks/servio-guard.pl" >/dev/null 2>&1 && ok "perl -c servio-guard.pl" || bad "perl -c servio-guard.pl"
-for s in inventory health logs traffic site-details site-files security-check php-sizing project-check deploy-history provision-server create-site deploy-site rollback-site workers artisan restart-service domains suspend-site database backup-db backup-files restore-db pool-size change-php updates harden reboot alerts issue-certificate delete-site fix-permissions job-status job-stop; do
+for s in inventory server-ip health logs traffic site-details site-files security-check php-sizing project-check deploy-history provision-server create-site deploy-site rollback-site workers artisan restart-service domains suspend-site database backup-db backup-files restore-db pool-size change-php updates harden reboot alerts issue-certificate delete-site fix-permissions job-status job-stop; do
     cat "$S/lib.sh" "$S/$s.sh" | bash -n && ok "lib.sh + $s.sh" || bad "lib.sh + $s.sh"
 done
 
@@ -1119,6 +1119,108 @@ printf '%s\r\n' "$DISCORD" > "$AW/hook.txt"; out="$(aw web1)"; rc=$?
 [ "$rc" = 0 ] && [ "$(cat "$AW/run-data")" = "$DISCORD" ] && [ "$(cat "$AW/run-env")" = 1 ] && [ "$(sed -n 2,3p "$AW/run-args" | tr '\n' ' ')" = "alerts.sh webhook " ] \
     && [[ "$out" == *"Discord webhook"* && "$out" != *abcdefghij* ]] && ok "alert-webhook: the URL goes on the stream to 'alerts.sh webhook', only its kind is shown" || bad "aw good: $rc $out"
 out="$(aw web1 --dry-run)"; [ ! -s "$AW/run-data" ] && grep -qx -- "--dry-run" "$AW/run-args" && ok "alert-webhook dry run: the URL isn't sent" || bad "aw dry: $out"
+
+echo "== Cloudflare DNS (item 80)"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/server-ip.sh")
+    for ip in 10.1.2.3 172.16.0.1 172.31.9.9 192.168.1.1 100.64.0.1 127.0.0.1 169.254.1.1; do is_private_ipv4 "$ip" || echo "public? $ip"; done
+    for ip in 203.0.113.10 172.32.0.1 8.8.8.8 100.128.0.1; do is_private_ipv4 "$ip" && echo "private? $ip"; done) 2>&1)"
+[ -z "$out" ] && ok "server-ip: private ranges (10, 172.16-31, 192.168, 100.64/10, 127, 169.254) skipped, public kept" || bad "is_private_ipv4: $out"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/server-ip.sh")
+    ip() { if [ "$1" = -4 ]; then printf '2: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0\n3: eth1    inet 203.0.113.10/24 scope global eth1\n'
+           else printf '2: eth0    inet6 2001:DB8::99/64 scope global temporary dynamic\n2: eth0    inet6 fd00::1/64 scope global\n2: eth0    inet6 2001:db8::10/64 scope global dynamic mngtmpaddr\n'; fi; }
+    curl() { echo "curl called"; }; main) 2>&1)"
+[[ "$out" == *"SERVIO_IPV4=203.0.113.10"* && "$out" == *"SERVIO_IPV6=2001:db8::10"* && "$out" != *"curl called"* ]] \
+    && ok "server-ip: first public IPv4; IPv6 skips temporary and private (fd00::) addresses" || bad "server-ip: $out"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/server-ip.sh")
+    ip() { [ "$1" = -4 ] && printf '2: eth0    inet 10.0.0.5/24 scope global eth0\n'; return 0; }
+    curl() { printf 'fl=1\nip=198.51.100.7\nts=1\n'; }; main) 2>&1)"
+[[ "$out" == *"SERVIO_IPV4=198.51.100.7"* && "$out" == *"Public IPv6: none"* && "$out" != *SERVIO_IPV6* ]] \
+    && ok "server-ip: behind NAT, the address seen from outside; no IPv6 = no SERVIO_IPV6 line" || bad "server-ip NAT: $out"
+
+out="$( (source "$S/lib.sh"; chown() { :; }; NGINX_DIR="$T/ngx"; mkdir -p "$NGINX_DIR/conf.d"; ensure_cloudflare_realip
+    cp "$NGINX_DIR/conf.d/servio-cloudflare-realip.conf" "$T/realip1"; ensure_cloudflare_realip; ls "$NGINX_DIR/conf.d" | grep -c 'realip.conf.bak' || true; cat "$NGINX_DIR/conf.d/servio-cloudflare-realip.conf") 2>&1)"
+[[ "$out" == 0* && "$out" == *"set_real_ip_from 173.245.48.0/20;"* && "$out" == *"set_real_ip_from 2400:cb00::/32;"* && "$out" == *"real_ip_header CF-Connecting-IP;"* ]] \
+    && ok "nginx trusts CF-Connecting-IP from Cloudflare's ranges only; written once (no change = no backup)" || bad "realip: $out"
+grep -q 'ensure_cloudflare_realip' "$S/provision-server.sh" && grep -A3 '^apply_nginx_config()' "$S/lib.sh" | grep -q . && grep -q '^    ensure_cloudflare_realip$' "$S/lib.sh" \
+    && ok "the real-IP config is written by provision and before every site's nginx change" || bad "realip wiring"
+grep -q "server: \*cloudflare" "$S/issue-certificate.sh" && ok "issue-certificate: a check failing through Cloudflare's proxy says why (Always Use HTTPS)" || bad "ic cloudflare hint"
+
+CF="$T/cf"; mkdir -p "$CF/bin" "$CF/scripts"; cp "$S/dns.sh" "$CF/scripts/"
+ZID="0123456789abcdef0123456789abcdef"; RA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; RB="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+TOKEN_VALUE="tok_$(printf 'Z%.0s' $(seq 1 36))"
+echo "$TOKEN_VALUE" > "$CF/token"
+cat > "$CF/scripts/run.sh" <<'FAKE'
+#!/usr/bin/env bash
+echo "$@" > "$FAKE_DIR/run-args"
+echo "Public IPv4: 203.0.113.10"; echo "SERVIO_IPV4=203.0.113.10"
+[ -n "${FAKE_NO_V6:-}" ] || echo "SERVIO_IPV6=2001:db8::10"
+FAKE
+cat > "$CF/bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+cat > "$FAKE_DIR/curl-stdin"
+printf '%s\n' "$*" >> "$FAKE_DIR/curl-argv"
+method=GET url="" data=""
+while [ $# -gt 0 ]; do case "$1" in -X) method="$2"; shift ;; --data) data="$2"; shift ;; https://*) url="$1" ;; esac; shift; done
+echo "$method ${url#https://api.cloudflare.com/client/v4} $data" >> "$FAKE_DIR/curl-calls"
+case "$method $url" in
+    "GET "*"/zones?name=example.com") echo '{"success":true,"result":[{"id":"0123456789abcdef0123456789abcdef"}]}' ;;
+    "GET "*"/zones?name="*) [ -n "${FAKE_AUTH_FAIL:-}" ] && echo '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' || echo '{"success":true,"result":[]}' ;;
+    "GET "*"/dns_records?"*) cat "$FAKE_DIR/records.json" ;;
+    "GET "*"/settings/ssl") echo "{\"success\":true,\"result\":{\"value\":\"${FAKE_SSL:-strict}\"}}" ;;
+    *) [ -f "$FAKE_DIR/records-after.json" ] && mv -f "$FAKE_DIR/records-after.json" "$FAKE_DIR/records.json"; echo '{"success":true,"result":{}}' ;;
+esac
+FAKE
+chmod +x "$CF/bin/curl" "$CF/scripts/run.sh"
+recs() { printf '{"success":true,"result":[%s]}' "$1"; }
+rec() { printf '{"id":"%s","type":"%s","content":"%s","proxied":%s}' "$1" "$2" "$3" "$4"; }
+dns() { rm -f "$CF"/curl-* "$CF/run-args"; PATH="$CF/bin:$PATH" FAKE_DIR="$CF" SERVIO_CLOUDFLARE_TOKEN="$CF/token" bash "$CF/scripts/dns.sh" "$@" 2>&1; }
+calls() { grep -v '^GET' "$CF/curl-calls" 2>/dev/null; }
+
+SERVIO_CLOUDFLARE_TOKEN="$CF/nope" PATH="$CF/bin:$PATH" FAKE_DIR="$CF" bash "$CF/scripts/dns.sh" web1 set shop.example.com >/dev/null 2>&1; rc=$?
+[ "$rc" = 3 ] && ok "dns: no token file on the laptop = exit 3" || bad "dns no token: $rc"
+echo "not a token!" > "$CF/badtoken"; SERVIO_CLOUDFLARE_TOKEN="$CF/badtoken" PATH="$CF/bin:$PATH" FAKE_DIR="$CF" bash "$CF/scripts/dns.sh" web1 set shop.example.com >/dev/null 2>&1
+[ $? = 3 ] && ok "dns: a file that isn't a token is refused before anything is sent" || bad "dns bad token"
+for bad_args in "web1 set Shop.Example.com" "web1 delete shop.example.com" "-oX set shop.example.com" "web1 set 'a.com;x'"; do
+    eval "dns $bad_args" >/dev/null; [ $? = 2 ] || bad "dns accepted: $bad_args"
+done; ok "dns: show, set or remove; host and name checked"
+
+recs "" > "$CF/records.json"
+out="$(dns web1 set shop.example.com --dry-run)"; rc=$?
+[ "$rc" = 0 ] && [[ "$out" == *"create A shop.example.com -> 203.0.113.10"* && "$out" == *"create AAAA shop.example.com -> 2001:db8::10"* && "$out" == *"proxied: true"* && "$out" == *"dry run"* ]] && [ -z "$(calls)" ] \
+    && ok "dns set dry run: A and AAAA from the server's own addresses, proxied, nothing written" || bad "dns dry: $rc $out / $(calls)"
+grep -q '/zones?name=shop.example.com' "$CF/curl-calls" && grep -q '/zones?name=example.com' "$CF/curl-calls" && ok "dns: the zone is found by walking up the name (shop.example.com, example.com)" || bad "zone walk"
+! grep -q "$TOKEN_VALUE" "$CF/curl-argv" && grep -q "header = \"Authorization: Bearer $TOKEN_VALUE\"" "$CF/curl-stdin" && [[ "$out" != *"$TOKEN_VALUE"* ]] \
+    && ok "dns: the token goes to curl on stdin (-K -), never on its command line or in the output" || bad "token leak: $(cat "$CF/curl-argv")"
+recs "$(rec $RA A 203.0.113.10 true),$(rec $RB AAAA 2001:db8::10 true)" > "$CF/records-after.json"
+out="$(dns web1 set shop.example.com)"; rc=$?
+[ "$rc" = 0 ] && [ "$(calls | grep -c '^POST')" = 2 ] && calls | grep -q '"type":"A","name":"shop.example.com","content":"203.0.113.10","ttl":1,"proxied":true,"comment":"servio-agent: web1"' \
+    && [[ "$out" == *"PASS          A shop.example.com"* && "$out" == *"PASS          AAAA"* && "$out" == *"Full (strict)"* ]] \
+    && ok "dns set: two records created, proxied, checked afterwards, SSL mode Full (strict) passes" || bad "dns set: $rc $out / $(calls)"
+recs "" > "$CF/records.json"; recs "$(rec $RA A 203.0.113.10 false),$(rec $RB AAAA 2001:db8::10 false)" > "$CF/records-after.json"
+out="$(dns web1 set shop.example.com --dns-only)"
+calls | grep -q '"proxied":false' && ! calls | grep -q '"proxied":true' && [[ "$out" != *"SSL mode"* ]] && ok "dns set --dns-only: grey-cloud records (no SSL mode check needed)" || bad "dns-only: $out"
+recs "$(rec $RA A 203.0.113.10 true),$(rec $RB AAAA 2001:db8::10 true)" > "$CF/records.json"; rm -f "$CF/records-after.json"
+out="$(dns web1 set shop.example.com)"; [[ "$out" == *"none: shop.example.com already points to web1"* ]] && [ -z "$(calls)" ] && ok "dns set: already right = nothing written (safe to run again)" || bad "dns idempotent: $out"
+recs "$(rec $RA A 198.51.100.99 true)" > "$CF/records.json"
+out="$(dns web1 set shop.example.com)"; rc=$?
+[ "$rc" = 4 ] && [[ "$out" == *"already points to 198.51.100.99"*"--move"* ]] && [ -z "$(calls)" ] && ok "dns set: a name pointing ELSEWHERE is refused (a live site may be there)" || bad "dns elsewhere: $rc $out"
+recs "$(rec $RA A 203.0.113.10 true)" > "$CF/records-after.json"
+out="$(dns web1 set shop.example.com --move)"; calls | grep -q "^PATCH /zones/$ZID/dns_records/$RA .*203.0.113.10" && ok "dns set --move: the record is changed to this server" || bad "dns move: $out / $(calls)"
+recs "$(rec $RA CNAME other.example.net true)" > "$CF/records.json"; rm -f "$CF/records-after.json"
+out="$(dns web1 set shop.example.com)"; [ $? = 4 ] && [[ "$out" == *"CNAME"* ]] && [ -z "$(calls)" ] && ok "dns set: a CNAME is refused (changed by hand)" || bad "dns cname: $out"
+recs "$(rec $RA A 203.0.113.10 true),$(rec $RB AAAA 2001:db8::77 true)" > "$CF/records.json"
+out="$(FAKE_NO_V6=1 dns web1 set shop.example.com)"; [ $? = 4 ] && [[ "$out" == *"no such address"* ]] && ok "dns set: an AAAA pointing elsewhere on a server without IPv6 is refused (IPv6 visitors would go there)" || bad "dns aaaa: $out"
+recs "" > "$CF/records.json"; recs "$(rec $RA A 203.0.113.10 true),$(rec $RB AAAA 2001:db8::10 true)" > "$CF/records-after.json"
+out="$(FAKE_SSL=flexible dns web1 set shop.example.com)"; [[ "$out" == *"WARN          SSL mode"*"REDIRECT LOOP"* ]] && ok "dns set: SSL mode Flexible warns about the redirect loop (never changed by the script)" || bad "flexible: $out"
+! grep -q 'settings/ssl.*PATCH\|PATCH.*settings' "$CF/curl-calls" && ! grep -qE '"(PATCH|PUT)".*settings|settings/ssl" *"\$' "$S/dns.sh" && ok "dns: zone settings are only read" || bad "settings changed"
+out="$(FAKE_AUTH_FAIL=1 dns web1 show shop.test.org)"; [ $? = 3 ] && [[ "$out" == *"Authentication error"*"permissions"* ]] && ok "dns: Cloudflare's auth error = exit 3, with what to check" || bad "auth: $out"
+
+recs "$(rec $RA A 203.0.113.10 true),$(rec $RB A 198.51.100.99 false)" > "$CF/records.json"; rm -f "$CF/records-after.json"
+out="$(dns web1 remove shop.example.com shop.example.org)"; [ $? = 4 ] && [ -z "$(calls)" ] && ok "dns remove: the typed name must match" || bad "remove typed: $out"
+out="$(dns web1 remove shop.example.com shop.example.com)"
+[ "$(calls)" = "DELETE /zones/$ZID/dns_records/$RA " ] && [[ "$out" == *"don't point to web1: left"* ]] && ok "dns remove: only records pointing to THIS server are deleted" || bad "remove: $out / $(calls)"
+out="$(dns web1 show shop.example.com)"; [[ "$out" == *"A shop.example.com -> 203.0.113.10 (proxied: true)  <- this server"* && "$out" == *"198.51.100.99 (proxied: false)"* ]] && [ -z "$(calls)" ] \
+    && ok "dns show: records, which point here, read-only" || bad "show: $out"
 
 echo "== Long jobs (item 45), in the foreground fallback (no systemd in tests)"
 stub='require_root() { :; }; has_systemd() { false; }; JOBS_DIR='"$T"'/jobs'

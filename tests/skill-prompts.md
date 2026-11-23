@@ -45,6 +45,7 @@ only checks this file's shape.
 - Harden web2.
 - Reboot web1 tonight.
 - Send alerts from web1 to our Slack.
+- Point shop.example.com at web1 in Cloudflare.
 - Deploy this project (inside a folder with .servio.json).
 
 ## Should not trigger

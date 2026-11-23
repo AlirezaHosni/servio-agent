@@ -9,7 +9,7 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.6.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.7.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -48,6 +48,7 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "Harden web2" | `harden.sh ssh\|confirm\|fail2ban\|php` | Yes: key-only SSH with an automatic undo until confirmed, fail2ban, safe PHP settings |
 | "Reboot web1" | `reboot.sh now <typed-host>` / `check` | Yes: every site goes down briefly; checks everything came back |
 | "Send alerts from web1 to our Slack" | `alert-webhook.sh <host>` (on your laptop), then `alerts.sh on\|off\|test\|status` | Yes: a 10-minute timer on the server posts to Slack, Discord or Telegram when a problem appears or clears (URL read from a file, never the chat) |
+| "Point shop.example.com at web1 in Cloudflare" | `dns.sh <host> set\|show\|remove <name>` (on your laptop) | Yes: A (and AAAA) records, proxied by default; the token is read from a file, never the chat |
 | "Give shop.example.com HTTPS" | `issue-certificate.sh` | Yes: Let's Encrypt certificate, HTTPS nginx config |
 | "Fix the permissions of shop.example.com" | `fix-permissions.sh <domain>` | Yes: files owned by the site user, `storage` and `bootstrap/cache` writable, `.env` 600 |
 | "Delete shop.example.com" | `delete-site.sh` | Yes, and it can't be undone |

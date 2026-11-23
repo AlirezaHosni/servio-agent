@@ -715,6 +715,29 @@ nginx_current_config() {
     fi
 }
 
+# Visitors' real addresses behind Cloudflare's proxy (item 80). A proxied site's requests come
+# FROM Cloudflare, so logs, the traffic summary and rate limits would all see Cloudflare's
+# addresses. nginx's realip module takes the visitor's address from the CF-Connecting-IP header,
+# but ONLY when the request really comes from one of Cloudflare's ranges: anyone else sending
+# that header is ignored (otherwise any visitor could fake their address).
+# Cloudflare's published ranges (https://www.cloudflare.com/ips/). Requests from other
+# addresses (sites not behind Cloudflare) are not affected.
+CLOUDFLARE_IPV4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+CLOUDFLARE_IPV6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
+REALIP_FILE="servio-cloudflare-realip.conf"
+cloudflare_realip_config() {
+    local r
+    echo "$MANAGED_HEADER. Real visitor addresses behind Cloudflare's proxy (only from Cloudflare's ranges)."
+    for r in $CLOUDFLARE_IPV4 $CLOUDFLARE_IPV6; do echo "set_real_ip_from $r;"; done
+    echo "real_ip_header CF-Connecting-IP;"
+}
+ensure_cloudflare_realip() {
+    local file="$NGINX_DIR/conf.d/$REALIP_FILE"
+    # Unchanged: nothing to do (and nothing to print in a dry run).
+    if [ -f "$file" ] && cloudflare_realip_config | cmp -s - "$file"; then return 0; fi
+    cloudflare_realip_config | write_file "$file" 644 root:root
+}
+
 # Put a new config in place, test it, and undo it if nginx rejects it, so one site's mistake
 # never takes nginx (and every other site) down. $1 domain, $2 the new config file.
 apply_nginx_config() {
@@ -723,6 +746,7 @@ apply_nginx_config() {
     enabled="$(nginx_enabled "$1")"
     # The config uses the servio_timed log format: it must exist before nginx -t.
     ensure_log_format
+    ensure_cloudflare_realip
 
     if dry_run; then
         write_file "$available" 644 root:root < "$2"
@@ -1065,7 +1089,7 @@ plan_vs_server() {
         elif [ "$node_major" -lt 20 ]; then check_warn "Node.js" "v$node_major: Vite 6+ needs Node 20 or newer"
         else check_pass "Node.js" "v$node_major"; fi
     fi
-    [ "$PLAN_DOCKER" -eq 0 ] || check_warn "Docker" "the repository has a Dockerfile and a compose file; this site runs natively (Docker mode comes in v0.8)"
+    [ "$PLAN_DOCKER" -eq 0 ] || check_warn "Docker" "the repository has a Dockerfile and a compose file; this site runs natively (Docker mode is planned for later)"
     [ "$PLAN_COMPOSER_OK" -eq 1 ] || check_na "composer.json" "perl's JSON::PP is missing on the server"
     return 0
 }

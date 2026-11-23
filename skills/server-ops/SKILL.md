@@ -1,6 +1,6 @@
 ---
 name: server-ops
-description: Ploi-like work over SSH on the team's Ubuntu servers. See - inventory, health, why a site is down, logs, traffic, site details, security check, PHP sizing, a project's needs, deploy history. Do - provision (PHP, MySQL, Redis), create a Laravel site and database, deploy from git (zero downtime), roll back, workers and scheduler, artisan commands, restart services, PHP version and pool size, domains and www, suspend, SSL, backups and restore, package updates, hardening, reboot, alerts, delete a site. Use when the user asks what runs on a server, whether it's healthy, why a site is slow or down, or to set up, deploy, back up, secure or remove a site or server, naming a server (an SSH host alias like web1) or a domain.
+description: Ploi-like work over SSH on the team's Ubuntu servers. See - inventory, health, why a site is down, logs, traffic, site details, security check, PHP sizing, a project's needs, deploy history. Do - provision (PHP, MySQL, Redis), create a Laravel site and database, deploy from git (zero downtime), roll back, workers and scheduler, artisan commands, restart services, PHP version and pool size, domains and www, Cloudflare DNS, suspend, SSL, backups and restore, package updates, hardening, reboot, alerts, delete a site. Use when the user asks what runs on a server, whether it's healthy, why a site is slow or down, or to set up, deploy, back up, secure or remove a site or server, naming a server (an SSH host alias like web1) or a domain.
 ---
 
 # Server ops (servio-agent)
@@ -195,7 +195,8 @@ repeating the versions the server has). After OK it switches the pool and nginx,
 4. Show the `SERVIO_DEPLOY_KEY=` public key and tell the user to add it to the repository as a
    **read-only deploy key** (GitHub: repo, Settings, Deploy keys). Only the public half is
    printed; the private half never leaves the server.
-5. Tell them to point the domain's DNS (A record) at the server before SSL.
+5. DNS before SSL: if the domain is on Cloudflare, offer `dns.sh <host> set <domain>` (see
+   references/data-and-laptop.md); otherwise tell them to add an A record for the server.
 
 ### Project check: what the code needs (read-only, no OK needed)
 `run.sh <host> project-check.sh <domain> [branch] [repository]`. Reads the newest commit of the
@@ -213,12 +214,13 @@ it. Covers `updates.sh` (upgrade, automatic security updates), `harden.sh` (ssh 
 automatic undo until `confirm`, fail2ban, php), `reboot.sh` (typed host alias, then `check`) and
 alerts (`alert-webhook.sh` on the laptop, then `alerts.sh on|off|test|status`).
 
-### Databases, backups, restore, linked projects, CI status
+### Databases, backups, restore, linked projects, CI status, Cloudflare DNS
 **Read `${CLAUDE_PLUGIN_ROOT}/skills/server-ops/references/data-and-laptop.md` first**, then
 follow it. Covers: a site's MySQL database (`database.sh`), encrypted backups to the laptop
 (`backup.sh`, which runs `backup-db.sh` / `backup-files.sh`), restoring a database
 (`restore.sh`, which runs `restore-db.sh`; `live` mode needs the typed domain), `.servio.json`
-project links (`project-link.sh`) and CI status before a deploy (`ci-status.sh`).
+project links (`project-link.sh`), CI status before a deploy (`ci-status.sh`) and Cloudflare
+DNS records (`dns.sh`, which asks the server `server-ip.sh`).
 
 ### Deploy a site
 1. Ask for the host, domain, branch, and (first deploy only) the repository
@@ -322,7 +324,8 @@ workers.sh if they should). Deploys still work while suspended (the health check
    code, uploads, `.env`, SQLite files). It can't be undone. MySQL databases are not touched.
 2. Ask the user to type the domain to confirm. Wait for their message.
 3. `run.sh <host> delete-site.sh <domain> <what-they-typed>`.
-4. Remind them to remove the deploy key from the repository's settings.
+4. Remind them to remove the deploy key from the repository's settings. If the domain is on
+   Cloudflare, offer `dns.sh <host> remove <name> <typed-name>` for each name (dry run first).
 
 ### Fix permissions ("Permission denied" errors)
 1. Dry run: `run.sh <host> fix-permissions.sh <domain> --dry-run`. It counts files with the wrong
@@ -368,7 +371,7 @@ workers.sh if they should). Deploys still work while suspended (the health check
   suggests one, show it to the user (rule 9).
 
 ## What this can't do (say so if asked)
-Firewall rule changes; push-to-deploy and Docker sites (planned, v0.7-v0.8); metrics over
+Firewall rule changes; push-to-deploy and Docker sites (planned for later); metrics over
 time (health is a snapshot; alerts only watch); TLS checks from outside, nginx config reviews and
 redirects; telling you a server is down (it can't post then); anything on non-Ubuntu or
 Ubuntu 26.04 servers. No shared state between teammates beyond each server's own lock and log:

@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$SCRIPTS_DIR/../../../.claude-plugin/plugin.json"
-ALLOWED="inventory.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh project-check.sh deploy-history.sh provision-server.sh create-site.sh deploy-site.sh rollback-site.sh workers.sh artisan.sh restart-service.sh domains.sh suspend-site.sh database.sh backup-db.sh backup-files.sh restore-db.sh pool-size.sh change-php.sh updates.sh harden.sh reboot.sh alerts.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-status.sh job-stop.sh"
+ALLOWED="inventory.sh server-ip.sh health.sh logs.sh traffic.sh site-details.sh site-files.sh security-check.sh php-sizing.sh project-check.sh deploy-history.sh provision-server.sh create-site.sh deploy-site.sh rollback-site.sh workers.sh artisan.sh restart-service.sh domains.sh suspend-site.sh database.sh backup-db.sh backup-files.sh restore-db.sh pool-size.sh change-php.sh updates.sh harden.sh reboot.sh alerts.sh issue-certificate.sh delete-site.sh fix-permissions.sh job-status.sh job-stop.sh"
 # Long scripts run as a job on the server (item 45): a dropped connection doesn't stop them.
 LONG="provision-server.sh deploy-site.sh issue-certificate.sh updates.sh"
 # Scripts whose stdout is data (encrypted backups), not messages: only backup.sh runs them.

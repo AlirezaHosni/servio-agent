@@ -104,6 +104,26 @@ Now point the domain at the server: in your DNS, an **A record** for `shop.examp
 the server's IP. Visiting `http://shop.example.com` shows a "This site is set up" page once DNS
 has updated.
 
+### DNS on Cloudflare?
+
+Claude can make the records for you. Once, create an API token in Cloudflare (My Profile, API
+Tokens, template **Edit zone DNS**, only your zones; add Zone > Zone > Read, and Zone > Zone
+Settings > Read if you want the SSL mode checked) and save it on your laptop, never in the chat:
+
+```bash
+mkdir -p ~/.config/servio
+nano ~/.config/servio/cloudflare-token.txt   # one line: the token
+chmod 600 ~/.config/servio/cloudflare-token.txt
+```
+
+> Point shop.example.com at web1 in Cloudflare.
+
+It asks web1 for its addresses and makes an A record (and AAAA if the server has IPv6),
+**proxied** through Cloudflare. A name that already points somewhere else is refused unless you
+say to move it. After the certificate, set Cloudflare's SSL/TLS mode to **Full (strict)**:
+"Flexible" plus the site's redirect to https makes a redirect loop. The server logs your
+visitors' real addresses, not Cloudflare's.
+
 ### A database for the site
 
 > Create a MySQL database for shop.example.com.
@@ -327,6 +347,8 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 | Laravel: `Permission denied` on `storage/logs` or `bootstrap/cache` | a file was created by another user (often root, via `sudo`) | ask Claude to "fix permissions for <domain>" |
 | `Connection refused` right after several connections | the firewall rate-limits SSH (6+ connections in 30 seconds) | wait 30 seconds; for many quick connections, turn on `ControlMaster auto` + `ControlPersist 60s` for that host in `~/.ssh/config` (one connection is reused) |
 | `http://… doesn't reach this server yet` | DNS not pointing here (yet) | fix the A record, wait, try again |
+| `… is proxied through Cloudflare` (SSL) | Cloudflare's "Always Use HTTPS" redirects Let's Encrypt | turn it off until the certificate exists, or `dns.sh … --dns-only` first |
+| Cloudflare: "too many redirects" | SSL mode Flexible | Cloudflare > SSL/TLS > Full (strict) |
 | `servio-agent: … touches a .env file` (denied) | the guard stopped a command touching a secret | expected; do that part yourself |
 | `isn't supported yet` | not Ubuntu 22.04/24.04 | use a supported server |
 | php-sizing: `no PHP workers running right now` | pools start workers only on requests | run it again while the sites have traffic |

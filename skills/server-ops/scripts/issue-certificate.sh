@@ -108,6 +108,12 @@ main() {
             echo "  curl said:        ${got:-nothing}" >&2
             echo "  $name points to: $(getent ahosts "$name" | awk '{print $1}' | sort -u | tr '\n' ' ')" >&2
             echo "  this server is:   $(hostname -I)" >&2
+            # Proxied through Cloudflare (dns.sh): its addresses, not this server's, are normal.
+            if curl -sI --max-time 10 "http://$name/.well-known/acme-challenge/$token" 2>/dev/null | grep -qi '^server: *cloudflare'; then
+                echo "  $name is proxied through Cloudflare. Its 'Always Use HTTPS' setting (or a" >&2
+                echo "  redirect rule) sends Let's Encrypt to https, which has no certificate yet." >&2
+                die_state "Turn 'Always Use HTTPS' off in Cloudflare until the certificate exists (or make the record DNS only: dns.sh <host> set $name --dns-only), then try again."
+            fi
             die_state "Add an A record for $name with this server's IP, wait until DNS shows it, then try again (or remove that name: domains.sh)."
         fi
         echo "OK: $name points here."

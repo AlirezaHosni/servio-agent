@@ -1,7 +1,7 @@
 # Data and laptop workflows (server-ops skill)
 
-Read this before creating a database, taking or listing backups, restoring, linking a project
-or checking CI. The rules in SKILL.md still apply (dry run first, OK before changes, typed
+Read this before creating a database, taking or listing backups, restoring, linking a project,
+checking CI or changing Cloudflare DNS. The rules in SKILL.md still apply (dry run first, OK before changes, typed
 domain for destructive steps, never read or print secrets).
 
 ## Database for a site (MySQL)
@@ -65,3 +65,28 @@ These run on the laptop (plain `bash`, not `run.sh`); both only read, except `cr
   `pending`: offer to wait; `none`: say the repo reports no checks. Exit 5/3 (no `gh` or not
   logged in): skip it and say so; never log in for the user. GitHub is read here only through
   `gh api` GET calls; never anything that changes GitHub.
+
+## Cloudflare DNS (`dns.sh`, on the laptop)
+For domains whose DNS is on Cloudflare. Records are PROXIED by default (the team's choice):
+visitors reach Cloudflare, which forwards to the server.
+1. The API token is a SECRET. **Never ask for it in chat; if the user pastes one, tell them to
+   roll it** (Cloudflare: API Tokens > Roll). They create it themselves (template "Edit zone
+   DNS", their zones only; permissions Zone > DNS > Edit, Zone > Zone > Read, optional
+   Zone > Zone Settings > Read) and save it to `~/.config/servio/cloudflare-token.txt` (one
+   line, `chmod 600`). Never `cat` that file.
+2. `bash ${CLAUDE_PLUGIN_ROOT}/skills/server-ops/scripts/dns.sh <host> show <name>` (read-only):
+   the name's records, which point to this server, and the zone's SSL mode.
+3. `dns.sh <host> set <name> --dry-run`, then without `--dry-run` (OK first). One name per run:
+   do the main domain, then each extra name and `www.<domain>` if the site has them (inventory
+   shows them). A and, if the server has IPv6, AAAA, from the server's own addresses.
+   - Refused (exit 4) when the name points ELSEWHERE: a live site may be there. Explain, and use
+     `--move` only if the user says so in their own words.
+   - `--dns-only` (grey cloud) if the user wants it, or for the first certificate when
+     `issue-certificate.sh` says Cloudflare redirects Let's Encrypt to https.
+4. Then `issue-certificate.sh`. Afterwards, if `set`/`show` warned about the SSL mode, tell the
+   user to set **Full (strict)** in Cloudflare > SSL/TLS (Flexible + the site's https redirect =
+   a redirect loop). The script never changes it: it's one setting for the whole zone.
+- `dns.sh <host> remove <name> <typed-name>`: deletes only the A/AAAA records pointing to that
+  server (after delete-site, or when a name is removed with domains.sh). The user types the name.
+- The server logs real visitor addresses behind the proxy (nginx `servio-cloudflare-realip.conf`
+  trusts `CF-Connecting-IP` from Cloudflare's ranges only).

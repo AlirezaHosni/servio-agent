@@ -24,9 +24,8 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 | **v0.4** ✅ built (not yet run on a real server) | See everything (read-only) | 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 78 server logs · 46 runbooks. **Skill text only, no script:** 2 all servers (inventory on each alias, merged) · 47 save as runbook |
 | **v0.5** ✅ built (not yet run on a real server) | Laravel deploys | **A** 11–12 project check · **B** 15 release folders, health check, npm build, worker restart · 8 commits before deploy · access-log format with request time (14) · **C** 16 rollback · 72 deploy history · **D** 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · **E** 14 extra domains and `www` · 77 suspend / resume · **F** 8 CI status via `gh` (laptop) · 75 project linking · docs |
 | **v0.6** ✅ built (not yet run on a real server) | Data and server care | **A** MySQL 8 + Redis in provision (decided 2026-11-23: MySQL 8 only, Ubuntu's package) · 18 database setup · **B** 19 database backup to the laptop (age-encrypted) · 64 file backup (uploads, age-encrypted) · **C** 32 restore (fresh backup first; or into a new database) · **D** 23 change PHP version · 59 apply PHP-FPM sizing · **E** 25 package updates · 53 harden a server · 74 reboot · **F** 76 alerts · docs |
-| **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
-| **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
-| **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
+| **v0.7** ✅ built (not yet run on a real server) | Cloudflare DNS (decided 2026-11-24: only this; the rest of v0.7 and v0.8 moved to Later) | 80 Cloudflare DNS: records proxied by default, A plus AAAA when the server has IPv6, removal offered after a site is deleted |
+| **Later** | Approach B and the rest | 79 push-to-deploy (moved out of v0.7) · Docker mode: 27 install Docker, 28 dockerize a project (FrankenPHP), 29 Docker site, 30 Docker deploy, 63 compose review (was v0.8) · Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
 | **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) · 85 add deploy keys to GitHub with `gh` · 61 TLS check from outside · 62 nginx config review (both moved out of v0.4) · 73 redirects · 17 HSTS switch · maintenance mode around deploys (moved out of v0.5) · 24 firewall rules · 19 restore drill in Docker (moved out of v0.6) |
 
 Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
@@ -190,14 +189,14 @@ Why this order:
 20. **Run Laravel commands** (done in v0.5: `artisan.sh`), from an allow-list only: `migrate`, `optimize`, `optimize:clear`,
     `config:cache`, `route:cache`, `view:cache`, `queue:restart`, `storage:link`, `down`, `up`.
     Never `tinker`, `db:wipe`, `migrate:fresh` or anything typed freely.
-21. **Workers and scheduler** (done in v0.5, native: `workers.sh`; Docker in v0.8): create, update or remove a site's workers and scheduler from
+21. **Workers and scheduler** (done in v0.5, native: `workers.sh`; Docker later): create, update or remove a site's workers and scheduler from
     the deploy plan (B-11), with a **process count** per worker (e.g. `queue:work` × 3). Native
     (decision 2, **Supervisor**): one Supervisor program per worker (`numprocs` = the process count),
     running as **the site's user**, restarted automatically if it crashes, with its log rotated
     (size limit); the scheduler is a `* * * * * php artisan schedule:run` cron line in the site
     user's crontab, its output written to a log the problem check reads. Docker: `queue`,
     `scheduler` (and `horizon` / `reverb`) services in the compose file.
-22. **Restart a service** (done in v0.5: `restart-service.sh`; containers in v0.8): PHP-FPM, nginx, MySQL, Redis, Supervisor, a site's workers, or a
+22. **Restart a service** (done in v0.5: `restart-service.sh`; containers later): PHP-FPM, nginx, MySQL, Redis, Supervisor, a site's workers, or a
     site's containers.
 23. **Change a site's PHP version** (done in v0.6: `change-php.sh`; a server holds several versions, decision 1): install another
     PHP version if needed, then **first**
@@ -255,12 +254,15 @@ Why this order:
     GitHub secrets through a pipe (`gh secret set`), never into the chat or a file on the laptop.
     Turning it off removes the key from the server. Every push-deploy is in the action log (40)
     and deploy history (72) as "GitHub Actions".
-80. **Cloudflare DNS** (new, optional): when creating a site (or adding a domain), create or update
-    the A / AAAA records in Cloudflare, wait until DNS answers, then continue with SSL. Records are
-    created **not proxied** first (so the Let's Encrypt check reaches the server); turning the
-    Cloudflare proxy on is a separate step that also sets SSL mode to "Full (strict)". The
-    Cloudflare API token is limited to "DNS edit" on the chosen zones, kept in a `0600` file on
-    the laptop and read by the script only: never in the chat or Claude's environment.
+80. **Cloudflare DNS** (done in v0.7: `dns.sh` on the laptop, `server-ip.sh`; optional): create or
+    update a name's A / AAAA records in Cloudflare from the server's own addresses. **Decided
+    2026-11-24: proxied by default** (`--dns-only` for a grey-cloud record), AAAA when the server
+    has IPv6, removal offered after a site is deleted. A name pointing elsewhere is refused unless
+    `--move`. The zone's SSL mode is read and a warning given unless it's "Full (strict)"; it is
+    never changed (one setting for the whole zone). nginx takes visitors' real addresses from
+    `CF-Connecting-IP`, only from Cloudflare's ranges. The API token (DNS edit + zone read on the
+    chosen zones) is kept in a `0600` file on the laptop and read by the script only (curl gets
+    it on stdin): never in the chat or Claude's environment.
 85. **Add the deploy key to GitHub for you** (**later, if needed**: added 2026-11-23): after
     `create-site.sh` prints `SERVIO_DEPLOY_KEY=…`, a laptop-side script adds it to the site's repo
     with GitHub's CLI (`gh repo deploy-key add … --title servio-deploy@<domain>`), **read-only**

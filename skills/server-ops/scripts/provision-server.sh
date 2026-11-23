@@ -157,6 +157,8 @@ main() {
     step "Starting nginx"
     # The sites' access-log format with the request time (traffic.sh reads it).
     ensure_log_format
+    # Real visitor addresses for sites proxied through Cloudflare (dns.sh).
+    ensure_cloudflare_realip
     if ! dry_run; then nginx -t 2>&1; fi
     run systemctl enable nginx
     run systemctl restart nginx
