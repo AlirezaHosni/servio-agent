@@ -11,7 +11,8 @@ raises it too.
 ## Fix
 1. Look at the 5 busiest programs (`health.sh`) and the time: a cron at that minute?
 2. Traffic: the traffic summary shows top IPs and paths (bots, `/wp-login.php` scanners).
-   Blocking an IP is a firewall change (v0.6).
+   Blocking an IP has no script (firewall rules are a later item): a person does it with
+   `ufw`. SSH password guessers are banned by fail2ban (`harden.sh fail2ban`).
 3. If it passes by itself in a few minutes, note it and watch; don't restart things blindly.
 
 ## Commands

@@ -11,9 +11,10 @@ buffer pool set too large, no swap at all.
 
 ## Fix
 1. `health.sh` lists what was killed and the 5 biggest programs: that's the suspect.
-2. PHP: PHP-FPM sizing (item 58) measures real worker memory and recommends `pm.max_children`.
-3. A small server with no swap: a 1-2 GB swap file turns sudden kills into slowness (a change,
-   v0.6 harden; a person can do it now).
+2. PHP: PHP-FPM sizing (`php-sizing.sh`) measures real worker memory and recommends
+   `pm.max_children`; `pool-size.sh <domain> <n>` applies it.
+3. A small server with no swap: a 1-2 GB swap file turns sudden kills into slowness (no script
+   for it: a person does it by hand).
 4. A one-off job: run it with a memory limit, or at a quiet time.
 5. Then `health.sh` again.
 

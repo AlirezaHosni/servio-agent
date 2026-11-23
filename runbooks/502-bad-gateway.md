@@ -13,12 +13,12 @@ In order of how often we see it:
 
 ## Fix
 1. `bash run.sh <host> health.sh <domain>`: read which of the above it reports.
-2. Service stopped: restarting it is a change (v0.5, item 22). Until then a person runs
-   `sudo systemctl restart php<version>-fpm` and then health again.
+2. Service stopped: `bash run.sh <host> restart-service.sh php<version>` (a change: dry run,
+   then OK), then health again.
 3. Pool not running: `bash run.sh <host> create-site.sh <domain> --dry-run` shows the pool it
    would write; running it for real rewrites the pool and tests it.
 4. Workers busy: find the slow pages (traffic summary, logs) before raising `pm.max_children`
-   (PHP-FPM sizing says how high memory allows).
+   (PHP-FPM sizing says how high memory allows; `pool-size.sh <domain> <n>` applies it).
 
 ## Commands
 ```bash
