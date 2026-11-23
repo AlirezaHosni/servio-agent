@@ -35,7 +35,7 @@ main() {
     require_root
     read_site_settings "$domain"
     web_root="$(site_dir "$domain")/$SITE_WEB_DIR"
-    live="/etc/letsencrypt/live/$domain"
+    live="$LETSENCRYPT_DIR/live/$domain"
     lock_site "$domain"
     echo "OK: $(nginx_available "$domain") (web root $web_root, PHP $SITE_PHP)"
 

@@ -36,6 +36,9 @@ SITES_HOME="/home/servio"
 PHP_VERSIONS="8.3 8.4 8.5"
 UBUNTU_VERSIONS="22.04 24.04"
 ACME_ROOT="/var/www/letsencrypt"
+# Where nginx and certbot keep their files (variables so tests can point them at a fake server).
+NGINX_DIR="/etc/nginx"
+LETSENCRYPT_DIR="/etc/letsencrypt"
 MANAGED_HEADER="# Managed by Servio"
 ACTION_LOG="/var/log/servio-agent.log"
 LOGROTATE_FILE="/etc/logrotate.d/servio-agent"
@@ -344,9 +347,9 @@ validate_public_domain() {
 
 site_dir() { echo "$SITES_HOME/$1"; }
 deploy_key_path() { echo "$SITES_HOME/.ssh/deploy_$1"; }
-nginx_available() { echo "/etc/nginx/sites-available/$1"; }
-nginx_enabled() { echo "/etc/nginx/sites-enabled/$1"; }
-certificate_path() { echo "/etc/letsencrypt/live/$1/fullchain.pem"; }
+nginx_available() { echo "$NGINX_DIR/sites-available/$1"; }
+nginx_enabled() { echo "$NGINX_DIR/sites-enabled/$1"; }
+certificate_path() { echo "$LETSENCRYPT_DIR/live/$1/fullchain.pem"; }
 
 # Refuse to touch an nginx config a human (or another tool) wrote: only ours start with the header.
 require_managed_config() {
@@ -457,7 +460,7 @@ nginx_http_config() {
 
 # $1 domain, $2 web root, $3 PHP version
 nginx_https_config() {
-    local live="/etc/letsencrypt/live/$1"
+    local live="$LETSENCRYPT_DIR/live/$1"
     echo "$MANAGED_HEADER. Changes made by hand are overwritten when the site is updated."
     echo "# Port 80: Let's Encrypt's checks (first issue and renewals), and a redirect to HTTPS."
     echo "server {"

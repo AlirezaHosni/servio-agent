@@ -42,7 +42,7 @@ main() {
     if dry_run; then
         step "What would be deleted"
         echo "  nginx config:  $( [ -f "$available" ] && echo "$available (and its backups)" || echo none)"
-        echo "  certificate:   $( [ -d "/etc/letsencrypt/live/$domain" ] && echo "/etc/letsencrypt/live/$domain" || echo none)"
+        echo "  certificate:   $( [ -d "$LETSENCRYPT_DIR/live/$domain" ] && echo "$LETSENCRYPT_DIR/live/$domain" || echo none)"
         echo "  deploy key:    $( [ -f "$deploy_key" ] && echo "$deploy_key (+ .pub)" || echo none)"
         echo "  logs:          /var/log/nginx/$domain-*.log*"
         echo "  site folder:   $( [ -d "$dir" ] && echo "$dir ($(du -sh "$dir" 2>/dev/null | cut -f1), including .env, uploads and SQLite files)" || echo none)"
@@ -62,7 +62,7 @@ main() {
 
     # After the nginx config is gone: nginx must not point at certificate files we delete.
     step "Removing the SSL certificate"
-    if command -v certbot >/dev/null 2>&1 && [ -d "/etc/letsencrypt/live/$domain" ]; then
+    if command -v certbot >/dev/null 2>&1 && [ -d "$LETSENCRYPT_DIR/live/$domain" ]; then
         certbot delete --non-interactive --cert-name "$domain"
     else
         echo "None."
@@ -83,7 +83,7 @@ main() {
         check_pass "nginx no longer serves $domain"
     fi
     if [ -e "$dir" ]; then check_fail "site folder removed" "$dir still exists"; else check_pass "site folder removed"; fi
-    if [ -e "/etc/letsencrypt/live/$domain" ]; then check_fail "certificate removed"; else check_pass "certificate removed"; fi
+    if [ -e "$LETSENCRYPT_DIR/live/$domain" ]; then check_fail "certificate removed"; else check_pass "certificate removed"; fi
     if [ -e "$deploy_key" ]; then check_fail "deploy key removed"; else check_pass "deploy key removed"; fi
     check_summary || die "Something was left behind (see above)."
 

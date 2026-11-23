@@ -19,14 +19,18 @@ server (66) and the tutorial (42) updated. Numbers are the items below.
 | Release | Theme | Items |
 |---|---|---|
 | **v0.1.1** | Prove v0.1 on a real server | none new: run v0.1 (inventory, provision, create site, deploy, SSL, delete) on a throwaway Ubuntu 22.04 **and** 24.04 VPS with a real domain; fix what breaks. Quick wins: 36 (strict host keys), 44 (never wait for input) |
-| **v0.2** | Safety base | **Scripts:** 40 action log · 45 long jobs · 48 dry run · 49 four results · 50 exit codes · 51 safe file changes · 52 check the result · 68 masking · 69 site lock. **Hook:** 39 proof-based hook · 43 secrets backstop · 67 read-only mode · 81 server tiers. **Rules:** 38 no blind re-run · 54 declare scope · 70 approval scope · 84 files outside Claude's context. **Quality:** 55 skill checks · 56 fixture tests · 66 CI with the SSH test server |
-| **v0.3** | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. Teammates: 82 personal users · 71 team SSH keys. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
+| **v0.2** ✅ built (not yet run on a real server) | Safety base | **Scripts:** 40 action log · 45 long jobs · 48 dry run · 49 four results · 50 exit codes · 51 safe file changes · 52 check the result · 68 masking · 69 site lock. **Hook:** 39 proof-based hook · 43 secrets backstop. **Rules:** 38 no blind re-run · 54 declare scope · 70 approval scope · 84 files outside Claude's context. **Quality:** 55 skill checks · 56 fixture tests · 66 basic CI |
+| **v0.3** | New server layout | decision 6 (one user + PHP-FPM pool per site) and decision 1 (several PHP versions) applied to 13 provision (+ Supervisor, `ufw limit`), 14 create site, 31 delete site, 26 fix permissions, 1 inventory. **Servio panel moves to the same layout** (a separate task in the Servio repo) |
 | **v0.4** | See everything (read-only) | 2 all servers · 3 problem check · 4 health · 5 logs · 6 site details · 7 security check · 9 site files · 10 firewall status · 57 why is my site down · 58 PHP-FPM sizing · 60 traffic summary · 61 TLS from outside · 62 nginx review · 78 server logs · 46–47 runbooks |
 | **v0.5** | Laravel deploys | 11–12 project check · 8 what would deploy · 15 deploy with release folders, health check, npm build, worker restart · 16 rollback · 72 deploy history · 21 workers (Supervisor) and scheduler (cron) · 20 Laravel commands · 22 restart a service · 75 project linking · 77 suspend / resume · 73 redirects · 14 domains added later · 17 HSTS and certificate check |
 | **v0.6** | Data and server care | 18 database setup · 19 database backup to the laptop · 64 file backup · 32 restore (destructive) · 23 change PHP version · 59 apply PHP-FPM sizing · 24 firewall · 25 package updates · 53 harden a server · 74 reboot · 76 alerts |
 | **v0.7** | Team automation | 79 push-to-deploy · 80 Cloudflare DNS |
 | **v0.8** | Docker mode | 27 install Docker · 28 dockerize a project (FrankenPHP) · 29 Docker site · 30 Docker deploy · 63 compose review |
 | **Later** | Approach B and the rest | Servio as an MCP server (see "Approach B notes"), backups stored by Servio (65), limited sudo (83), "Not in this project" items |
+| **Later, if needed** | Big-team items (dropped 2026-11-23: a small team with 2-3 servers, each mixing live and non-live sites) | 67 read-only mode · 81 server tiers · 82 personal users · 71 team SSH keys · the real test server in CI (66) |
+
+Scope rule (2026-11-23): this is for a small team. Before adding a feature, check a team of this
+size needs it; anything mainly useful for big teams is asked about first, not built by default.
 
 Why this order:
 - **v0.1.1 first:** nothing has run on a real server yet; v0.1's shared parts (lib, SSL, provision)
@@ -224,7 +228,8 @@ Why this order:
     hardening. Provisioning would install a small root-owned runner on the server that only runs
     scripts whose SHA-256 is on a list of released servio-agent versions, with sudo allowed only
     for that runner. Cost: each plugin update needs one step to add the new hashes.
-71. **Team SSH keys** (new): list the keys that can log in to each server (with their comments,
+71. **Team SSH keys** (**later, if needed**: dropped 2026-11-23 for a small team; offboarding stays
+    "remove the key from each server by hand"): list the keys that can log in to each server (with their comments,
     e.g. `ali@laptop`), add a teammate's **public** key, and **remove a key from every server you
     name in one go** (offboarding; removal needs the key's comment typed back). Removing the key
     you are connected with, or the last key, is refused, so nobody locks themselves out. This
@@ -322,7 +327,7 @@ Docker rules (in the skill and checked by the scripts):
 38. Stop when a script fails, explain why, and don't retry without asking. (done) New: after a
     **timeout or dropped connection**, never re-run blindly: first check the state (is the deploy
     still running? which release is live? did the certificate get issued?), then decide.
-39. **One hook decides allow / ask / deny, by proof** (new): the hook does not hunt for bad
+39. **One hook decides allow / ask / deny, by proof** (**done, v0.2**): the hook does not hunt for bad
     commands; it only **allows what it can prove**:
     - `run.sh <alias> <script> [args]` in its **exact form** (known script name, arguments that
       pass the checks, nothing else on the line): read-only scripts (inventory, logs, health,
@@ -335,21 +340,21 @@ Docker rules (in the skill and checked by the scripts):
     ssh-mcp: a 4,300-line shell classifier still had 27 bypass advisories in a year.) The skill's `allowed-tools` may list only **our exact scripts**,
     never `curl`, `ssh` or `bash` as a whole (a skill with `Bash(curl:*)` lets Claude send data to
     any website without asking).
-40. **Action log on each server** (new): every change script appends who (SSH user and key comment),
+40. **Action log on each server** (**done, v0.2**): every change script appends who (SSH user and key comment),
     what, which site, the script's SHA-256 (which version ran), the plugin version, "via
     servio-agent (Claude Code)", whether it was a fresh OK or a remembered approval (70), and the
     result to `/var/log/servio-agent.log` on that server.
-43. **A stronger secrets backstop** (new): look inside pipes, `$(...)`, backticks, newlines and
+43. **A stronger secrets backstop** (**done, v0.2**): look inside pipes, `$(...)`, backticks, newlines and
     `bash -c "…"` / `sh -c`, and see through wrappers (`sudo`, `env`, `nohup`, `xargs`, `timeout`,
     `command`, `\`); read a command with a backslash two ways (shell and literal) and take the
     worse; an unquoted glob or `$VAR` in a word that could reach a secret path (`cat .e*`,
     `cat $F`) asks. No big parser: this is the second line behind 39. Simple regexes only and a
     length cap on the input (complex patterns can take a minute on a long command, a slowdown
     attack called ReDoS). Tests for each known way around it.
-44. **Never wait for input** (new): every script sets `PAGER=cat`, `SYSTEMD_PAGER=cat`, uses
+44. **Never wait for input** (**done, v0.2**): every script sets `PAGER=cat`, `SYSTEMD_PAGER=cat`, uses
     `--no-pager`, `-y`, `--no-interaction`, so nothing on the server can stop and wait for a
     keypress (with `ssh -T` and `BatchMode` it would hang until the timeout).
-45. **Long jobs survive a dropped connection** (new): provision, deploy and SSL run on the server
+45. **Long jobs survive a dropped connection** (**done, v0.2**): provision, deploy and SSL run on the server
     as a transient systemd service (`systemd-run`). Closing the laptop or losing Wi-Fi doesn't kill
     a deploy halfway. Each job has an ID (the unit name):
     - `… start` returns the job ID at once
@@ -361,50 +366,53 @@ Docker rules (in the skill and checked by the scripts):
     - "done" comes only from the job's real exit code plus the result check (52), never from
       "the site looks active" (a deploy that finished faster than the first check is not
       assumed to have succeeded)
-48. **Dry run first** (new): every change script takes `--dry-run` and prints the exact commands
+48. **Dry run first** (**done, v0.2**): every change script takes `--dry-run` and prints the exact commands
     and file changes it would make, without making them. Claude shows that output when asking
     for your OK, so "what will change" comes from the script, not from Claude's summary.
-49. **Four results, never a fake pass** (new): checks report PASS / WARN / FAIL / NOT ASSESSED. A
+49. **Four results, never a fake pass** (**done, v0.2**): checks report PASS / WARN / FAIL / NOT ASSESSED. A
     check that couldn't run (tool missing, no permission) is NOT ASSESSED, never PASS. Findings
     have a severity (high / medium / low), the report leads with the worst and ends with **one**
     proposed next step. After a fix the check runs again and shows before / after. Claude never
     says a server "is secure": only which checks passed and which weren't checked.
-50. **Fixed exit codes** (new): 0 done, 1 failed, 2 wrong input, 3 server not in the right state,
+50. **Fixed exit codes** (**done, v0.2**): 0 done, 1 failed, 2 wrong input, 3 server not in the right state,
     4 refused (confirmation missing or wrong), 5 missing tool. Claude explains each one correctly.
-51. **Safe file changes** (new): config files are written to a temp file and moved into place (never
+51. **Safe file changes** (**done, v0.2**): config files are written to a temp file and moved into place (never
     half-written), and the old version is copied to `<file>.bak-<time>` first, so a change can be
     undone by hand too.
-52. **Check the result, not the exit code** (new): after every change, a script checks the real
+52. **Check the result, not the exit code** (**done, v0.2**): after every change, a script checks the real
     state: the site answers after deploy, the certificate is served after SSL, the worker is
     running after a restart, SSH still lets you in after hardening.
-54. **Declare the scope** (new): at the start of a task Claude says which server and site it is
+54. **Declare the scope** (**done, v0.2**): at the start of a task Claude says which server and site it is
     about; anything outside that (another site, another server, a server-wide change) needs a
     separate OK.
-67. **Read-only mode per laptop** (new): a plugin setting (e.g. for a new teammate) where the hook
+67. **Read-only mode per laptop** (**later, if needed**: dropped 2026-11-23, a small team doesn't
+    need it; built in v0.2 Part C and removed again): a plugin setting where the hook
     **denies every change script** and only read-only scripts run. A simple "viewer" role without
     a central service. Default: normal mode (read-only runs, changes ask). There is no "auto"
     mode that runs changes without asking.
-68. **Secrets masked in all script output** (new): one filter in `lib.sh` on the server masks private
+68. **Secrets masked in all script output** (**done, v0.2**): one filter in `lib.sh` on the server masks private
     keys, Bearer tokens, `user:pass@`, `password=…`, `sk-…`, `ghp_…` in **every** script's output,
     as a backstop behind item 5 and the hook. It also masks long random-looking strings (an
     entropy check), not only known patterns, in outputs and in the action log.
-69. **One change at a time per site** (new): a lock on the server per site covers every change
+69. **One change at a time per site** (**done, v0.2**): a lock on the server per site covers every change
     script (deploy, rollback, PHP switch, workers, SSL, delete). A second one waits or stops with
     "another change is running on this site (started by …)".
-70. **Approvals never wider than what you approved** (new): if "remember this approval" is ever
+70. **Approvals never wider than what you approved** (**done, v0.2**): if "remember this approval" is ever
     added (here or in Servio), it is bound to the same server, the same script and the same
     arguments, and it expires. Never "the first word of the command", never "all servers", never
-    "everything for this session". Never on prod servers (81). Runs covered by one are logged as
-    "remembered approval", separate from a fresh yes (40).
-81. **Server tiers** (new): each host alias is marked `dev`, `staging` or `prod` in a small config
+    "everything for this session". Runs covered by one are logged as "remembered approval",
+    separate from a fresh yes (40).
+81. **Server tiers** (**later, if needed**: dropped 2026-11-23; servers mix live and non-live
+    sites, so a per-server label doesn't fit): each host alias is marked `dev`, `staging` or `prod` in a small config
     on the laptop. **An alias that isn't listed counts as prod**, the strictest tier. On prod every
     change asks and remembered approvals are off; read-only mode (67) can be set per tier (e.g.
     a teammate is read-only on prod, normal on staging).
-82. **A personal Linux user per teammate, not root** (new): each teammate logs in as their own user
+82. **A personal Linux user per teammate, not root** (**later, if needed**: dropped 2026-11-23 for a
+    small team): each teammate logs in as their own user
     with sudo, so the action log (40) and `auth.log` show the real person, and removing their key
     (71) ends their access. The tutorial stops recommending `User root`; provisioning can create
     these users.
-84. **Files never go through Claude's context** (new): backups, uploads and downloads stream straight
+84. **Files never go through Claude's context** (**done, v0.2**): backups, uploads and downloads stream straight
     between the server and a file on the laptop; Claude sees only names, sizes and checksums.
 
 ## G. Team knowledge (new)
@@ -423,19 +431,19 @@ Docker rules (in the skill and checked by the scripts):
     without the hooks. (done; Codex untested)
 42. Tutorial (done, to extend): install, `~/.ssh/config`, first run (inventory, create site, deploy,
     HTTPS), then backups, workers, and a separate Docker tutorial.
-55. **Skill quality checks** (new): the skill has fixed sections (Use when, Do not use when, Rules,
+55. **Skill quality checks** (**done, v0.2**): the skill has fixed sections (Use when, Do not use when, Rules,
     Workflows, Anti-patterns each with a fix, What it can't do); a small test checks they exist.
     A list of example prompts that should and shouldn't trigger the skill. The hook tests become
     a table covering every known way around it (43).
-56. **Tests without a server** (new): real outputs of `sshd -T`, `ufw status`, `ss`, `/proc/meminfo`,
+56. **Tests without a server** (**done for inventory, v0.2**; each new read-only script adds its own fixtures): real outputs of `sshd -T`, `ufw status`, `ss`, `/proc/meminfo`,
     `nginx -T`, kernel logs, `composer.lock` etc. are saved as files from a "good" and a "bad"
     server (with documentation IPs and `example.com`, no real data). The read-only scripts read
     their inputs through small functions that tests replace with those files, so inventory,
     health, security check, project check and sizing are tested on every change.
-66. **CI** (new): GitHub Actions on every push: `bash -n`, `shellcheck`, all tests, and
-    `claude plugin validate`. Plus **a real test server**: an Ubuntu 22.04 and 24.04 container
-    with SSH, where `run.sh` provisions, creates a site, deploys a small Laravel app, rolls back
-    and deletes it, so the scripts are tested for real and not only on saved outputs (56).
+66. **CI** (**done, v0.2**): GitHub Actions on every push: `bash -n`, `shellcheck`, all tests, and
+    `claude plugin validate`. **Later, if needed** (dropped 2026-11-23 for a small team): a real
+    test server in CI (Ubuntu 22.04 and 24.04 containers with SSH, running provision, create,
+    deploy, rollback, delete). Until then the real-server check is the manual VPS run (v0.1.1).
 
 ## Not in this project (on purpose)
 
@@ -557,5 +565,5 @@ And what Netcatty lacks, which Servio must have:
    manageable by both.
 7. **Scheduled off-site backups: not now.** Backups will be stored by Servio through its MCP server
    later (approach B). Until then, backups go to the laptop (C-19, C-64).
-8. **Sudo: `NOPASSWD: ALL`**, for each teammate's personal user (82). Limited sudo through a
+8. **Sudo: `NOPASSWD: ALL`** for the SSH user (personal users, 82, are dropped for now). Limited sudo through a
    hash-checked runner (C-83) stays a possible later hardening.

@@ -45,14 +45,20 @@ main() {
         echo "firewall:  $(ufw status | head -n 1)"
     fi
 
+    sites_report
+}
+
+# Every site in sites-enabled. A function of its own so tests can run it on a fake server folder
+# (tests/test-scripts.sh, "Inventory on a fake server").
+sites_report() {
     step "Sites"
-    if [ ! -d /etc/nginx/sites-enabled ]; then
-        echo "No /etc/nginx/sites-enabled."
+    if [ ! -d "$NGINX_DIR/sites-enabled" ]; then
+        echo "No $NGINX_DIR/sites-enabled."
         return
     fi
 
     local link name count=0
-    for link in /etc/nginx/sites-enabled/*; do
+    for link in "$NGINX_DIR"/sites-enabled/*; do
         [ -e "$link" ] || continue
         name="$(basename "$link")"
         count=$((count + 1))
@@ -79,7 +85,9 @@ site_report() {
 
     root="$(awk '$1 == "root" && $2 !~ /letsencrypt/ { sub(/;$/, "", $2); print $2; exit }' "$file")"
     [[ "$root" =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] && web_root="$root" || web_root="unknown"
-    php="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm\.sock#\1#')"
+    # `|| true`: a site without PHP (a static or hand-made config) has no socket; grep then
+    # "fails", and without it that would stop the whole inventory.
+    php="$(grep -oE 'unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock' "$file" | head -n 1 | sed -E 's#.*/php([0-9]+\.[0-9]+)-fpm\.sock#\1#' || true)"
     [ -n "$php" ] || php="none"
 
     cert="$(certificate_path "$domain")"

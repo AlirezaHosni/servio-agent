@@ -9,9 +9,13 @@ S="$ROOT/skills/server-ops/scripts"
 fail=0
 ok()  { echo "ok    $*"; }
 bad() { echo "FAIL  $*"; fail=1; }
+# On a laptop some tests can't run (Windows has no flock or symlinks): say so. In CI (Linux) a
+# skipped test is a failure, so nothing is ever silently left untested.
+skip() { if [ -n "${CI:-}" ]; then bad "skipped in CI: $*"; else echo "skip  $*"; fi; }
 
 echo "== Syntax (bash -n), alone and as the server sees it (lib.sh + script)"
 for f in "$S"/*.sh "$ROOT"/hooks/*.sh; do bash -n "$f" && ok "bash -n $(basename "$f")" || bad "bash -n $f"; done
+perl -c "$ROOT/hooks/servio-guard.pl" >/dev/null 2>&1 && ok "perl -c servio-guard.pl" || bad "perl -c servio-guard.pl"
 for s in inventory provision-server create-site deploy-site issue-certificate delete-site job-status job-stop; do
     cat "$S/lib.sh" "$S/$s.sh" | bash -n && ok "lib.sh + $s.sh" || bad "lib.sh + $s.sh"
 done
@@ -133,7 +137,7 @@ if ln -s "$d/f" "$d/link" 2>/dev/null && [ -L "$d/link" ]; then
     (source "$S/lib.sh"; echo y | write_file "$d/link" 644 "$me") >/dev/null 2>&1
     [ $? = 4 ] && [ "$(cat "$d/f")" = "two" ] && ok "never writes through a symlink (exit 4)" || bad "wrote through a symlink"
 else
-    echo "skip  symlink test (this system can't make symlinks)"
+    skip "symlink test (this system can't make symlinks)"
 fi
 
 echo "== Exit hooks run however the script ends"
@@ -182,13 +186,63 @@ out="$(source "$S/lib.sh"; ACTION_LOG="$T/a2.log"; install() { :; }; DRY_RUN=1; 
 
 echo "== Site lock (item 69)"
 if command -v flock >/dev/null 2>&1; then
+    # Not `lock_site … && ( … ); echo`: with set -e (from lib.sh), a failing LAST command of an
+    # && list ends the subshell before the echo. `|| echo` keeps going and still sees the code.
     out="$(source "$S/lib.sh"; LOCK_DIR="$T/locks"; install() { mkdir -p "${@: -1}"; }; SERVIO_SCRIPT_NAME=deploy-site.sh
-           lock_site shop.example.com && ( lock_site shop.example.com ) 2>&1; echo "second=$?")"
+           lock_site shop.example.com
+           ( lock_site shop.example.com ) 2>&1 || echo "second=$?")"
     [[ "$out" == *"Another change is running on shop.example.com (deploy-site.sh by"* && "$out" == *"second=3"* ]] \
         && ok "a second change on the same site stops (exit 3) and says who holds it" || bad "lock: $out"
 else
-    echo "skip  site lock test: no flock here (runs on Linux and in CI)"
+    skip "site lock test: no flock here (runs on Linux and in CI)"
 fi
+
+echo "== Inventory on a fake server (item 56: fixtures in tests/fixtures/inventory)"
+F="$ROOT/tests/fixtures/inventory"
+srv="$T/srv"
+mkdir -p "$srv/etc/nginx/sites-available" "$srv/etc/nginx/sites-enabled" "$srv/home/servio/.ssh"
+# shop.example.com: managed, HTTPS, deployed from git, Laravel, .env present, deploy key.
+(source "$S/lib.sh"; LETSENCRYPT_DIR="$srv/etc/letsencrypt"
+ nginx_https_config shop.example.com "$srv/home/servio/shop.example.com/public" 8.4) > "$srv/etc/nginx/sites-available/shop.example.com"
+mkdir -p "$srv/home/servio/shop.example.com/public" "$srv/etc/letsencrypt/live/shop.example.com"
+cp "$F/shop.composer.lock" "$srv/home/servio/shop.example.com/composer.lock"
+touch "$srv/home/servio/shop.example.com/.env" "$srv/home/servio/.ssh/deploy_shop.example.com.pub"
+( cd "$srv/home/servio/shop.example.com" && git init -q -b main && git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init )
+# Git Bash turns arguments that look like paths into Windows paths for native programs like
+# openssl: "/CN=…" would become "C:/Program Files/Git/CN=…". Exclude only that argument (file
+# paths must still be converted). Linux ignores this variable.
+MSYS2_ARG_CONV_EXCL="/CN=" openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=shop.example.com" \
+    -keyout "$T/test-only.key" -out "$srv/etc/letsencrypt/live/shop.example.com/fullchain.pem" >/dev/null 2>&1
+# evil.example.com: managed, HTTP only, a composer.lock that tries to give the AI instructions.
+(source "$S/lib.sh"; nginx_http_config evil.example.com "$srv/home/servio/evil.example.com/public" 8.3) > "$srv/etc/nginx/sites-available/evil.example.com"
+mkdir -p "$srv/home/servio/evil.example.com"; cp "$F/evil.composer.lock" "$srv/home/servio/evil.example.com/composer.lock"
+# static.example.com: hand-made, no PHP at all. "default": nginx's own, not a Servio site.
+cp "$F/handmade.nginx.conf" "$srv/etc/nginx/sites-available/static.example.com"
+echo "server {}" > "$srv/etc/nginx/sites-available/default"
+for f in shop.example.com evil.example.com static.example.com default; do      # copies: Windows has no symlinks
+    cp "$srv/etc/nginx/sites-available/$f" "$srv/etc/nginx/sites-enabled/$f"
+done
+inv="$(source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/inventory.sh")
+       NGINX_DIR="$srv/etc/nginx"; LETSENCRYPT_DIR="$srv/etc/letsencrypt"; SITES_HOME="$srv/home/servio"
+       runuser() { shift 3; "$@"; }                    # runuser -u servio -- cmd  ->  cmd
+       sites_report 2>&1)"; rc=$?
+[ "$rc" = 0 ] && ok "inventory's site report runs to the end (exit 0)" || bad "sites_report exit $rc: $inv"
+section() { printf '%s\n' "$inv" | sed -n "/^- $1\$/,/^\$/p"; }
+shop="$(section shop.example.com)"
+for want in "managed:   yes" "php:       8.4" "ssl:       HTTPS, certificate valid until" "(branch main)" "laravel:   13.2.1" ".env:      present" "deploy key: present"; do
+    [[ "$shop" == *"$want"* ]] && ok "shop.example.com: $want" || bad "shop.example.com lacks '$want': $shop"
+done
+[[ "$shop" =~ deployed:\ +[0-9a-f]{7} ]] && ok "shop.example.com: deployed commit shown as a short hash" || bad "no commit hash: $shop"
+evil="$(section evil.example.com)"
+[[ "$evil" == *"laravel:   not a Laravel app (or unknown)"* && "$evil" != *IGNORE* ]] \
+    && ok "evil.example.com: an injected 'version' never reaches the output" || bad "injection got through: $evil"
+[[ "$evil" == *"ssl:       HTTP only (no certificate)"* && "$evil" == *".env:      missing"* && "$evil" == *"deployed:  not deployed"* ]] \
+    && ok "evil.example.com: HTTP only, no .env, not deployed" || bad "evil.example.com: $evil"
+static="$(section static.example.com)"
+[[ "$static" == *"managed:   no (hand-made config)"* && "$static" == *"php:       none"* ]] \
+    && ok "static.example.com: hand-made, no PHP (and the inventory didn't stop on it)" || bad "static.example.com: $static"
+[[ "$inv" == *"- default (not a Servio site)"* ]] && ok "nginx's 'default' is listed, not inspected" || bad "default: $inv"
+[[ "$inv" != *"ERROR"* ]] && ok "no errors in the report" || bad "errors in report: $inv"
 
 echo "== run.sh: what it sends, and how it reports connection problems (fake ssh)"
 mkdir -p "$T/bin"

@@ -1,0 +1,50 @@
+# CI (item 66): on every push and pull request, on Linux.
+#   - shellcheck (static checks for bash scripts)
+#   - the three test suites (syntax, lib.sh, jobs, inventory fixtures, run.sh with a fake ssh,
+#     the guard's decisions, the skill's shape). On Linux the site-lock and symlink tests run
+#     too; a skipped test fails the run here (CI=true).
+#   - claude plugin validate (the manifests and the marketplace)
+# No real server is involved: the real-server check is the manual VPS run (release v0.1.1).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          bash --version | head -n 1
+          perl -MJSON::PP -e 'print "perl $^V, JSON::PP $JSON::PP::VERSION\n"'
+          shellcheck --version | sed -n 2p
+          command -v flock
+
+      # Errors only for now: shellcheck was never run on these scripts before CI. Once a run is
+      # clean, raise it to warnings (-S warning).
+      - name: ShellCheck
+        run: shellcheck -S error skills/server-ops/scripts/*.sh hooks/*.sh tests/*.sh
+
+      - name: Script tests
+        run: bash tests/test-scripts.sh
+
+      - name: Hook tests
+        run: bash tests/test-hook.sh
+
+      - name: Skill tests
+        run: bash tests/test-skill.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate the plugin
+        run: npx --yes @anthropic-ai/claude-code@2 plugin validate .

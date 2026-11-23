@@ -1,5 +1,5 @@
 {
-  "description": "servio-agent: block Bash commands that would read .env files on servers or private keys anywhere.",
+  "description": "servio-agent guard: allows only the plugin's own read-only scripts without a prompt, asks before changes and raw ssh, denies reading .env files on servers and private keys anywhere.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/block-secrets.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/servio-guard.sh\"",
             "timeout": 10
           }
         ]

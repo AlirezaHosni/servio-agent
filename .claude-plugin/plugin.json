@@ -1,6 +1,6 @@
 {
   "name": "servio-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ploi-like server work over SSH from Claude Code: provision Ubuntu servers, create Laravel sites, deploy from git, issue Let's Encrypt SSL, delete sites and list what runs where. Change actions need your OK in chat; a hook blocks reading .env files and private keys.",
   "author": { "name": "Servio team" },
   "repository": "https://github.com/AlirezaHosni/servio-agent",

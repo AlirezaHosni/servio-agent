@@ -148,7 +148,7 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 | `sudo: a password is required` | user lacks passwordless sudo | use `root`, or add a `NOPASSWD` sudoers rule |
 | `Permission denied (publickey)` during deploy, from git | the deploy key isn't on the repository | add the `SERVIO_DEPLOY_KEY` line as a deploy key |
 | `http://… doesn't reach this server yet` | DNS not pointing here (yet) | fix the A record, wait, try again |
-| `Blocked by servio-agent: …` | the hook stopped a command touching a secret | expected; do that part yourself |
+| `servio-agent: … touches a .env file` (denied) | the guard stopped a command touching a secret | expected; do that part yourself |
 | `isn't supported yet` | not Ubuntu 22.04/24.04 | use a supported server |
 
 When a teammate leaves: remove their public key from `~/.ssh/authorized_keys` on every server.

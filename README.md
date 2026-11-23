@@ -8,9 +8,10 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.1.0, not yet tested against a real server.** Syntax, input checks, the nginx
-> config renderer and the secrets hook are tested locally (`tests/`). Try it on a throwaway
-> server before you use it on a live one.
+> **Status: v0.2.0, not yet tested against a real server.** The scripts' building blocks, the
+> inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
+> skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
+> throwaway server before you use it on a live one.
 
 ## What it can do
 
@@ -43,10 +44,24 @@ metrics, non-Ubuntu servers or Ubuntu 26.04. It doesn't edit `.env` files, ever:
   reaches the server, so a DNS mistake doesn't burn Let's Encrypt's 5-failures-per-hour limit.
 - **Secrets stay on the server.** Deploy keys are made on the server and only the public half
   is printed. Certificates' private keys never leave it. Claude never reads `.env` files.
-- **A hook backs up the most important rule.** `hooks/block-secrets.sh` runs before every Bash
-  command in Claude Code and blocks commands that mention private keys (anywhere) or `.env`
-  files on a server (in `ssh`/`scp`/`rsync` commands). Your *local* `.env` in your own projects
-  isn't blocked.
+- **A guard hook decides by proof, not by guessing.** `hooks/servio-guard.pl` runs before every
+  Bash command in Claude Code:
+  - **allows without a prompt** only the plugin's **own** `run.sh` in its exact form with a
+    read-only script (inventory, job status) or a `--dry-run`
+  - **asks** before every change script (naming the site and the server), before `run.sh` used
+    in any other form, and before raw `ssh`/`scp`/`rsync` to a server
+  - **denies** commands that mention private keys (anywhere) or `.env` files on a server, also
+    when hidden with backslashes, quotes or wildcards (`.e\nv`, `".e"nv`, `.e*`, `id_*`)
+  Normal commands in your own projects get no decision (your local `.env` isn't blocked).
+  There are no settings: built for a small team, where every change simply asks.
+- **Every change can be previewed.** `--dry-run` runs all the checks and prints exactly what would
+  change (file diffs included) without changing anything. The guard allows dry runs without a
+  prompt, so you approve a change after seeing its dry run.
+- **Long jobs survive a dropped connection.** Provision, deploy and SSL run as a systemd job on
+  the server; `job-status.sh` reads their output later, `job-stop.sh` stops one.
+- **Every server keeps a record.** Each change appends a line to `/var/log/servio-agent.log` on
+  that server (who, which script and its SHA-256, which site, the result), and one change at a
+  time runs per site (a lock).
 - **No keys in this repo or in the chat.** Servers are reached through the host aliases in your
   `~/.ssh/config` and the keys in your SSH agent.
 
@@ -58,15 +73,15 @@ of these later; the plugin will then talk to Servio instead of SSHing directly.
 - **Root SSH access on every laptop.** Everyone who uses the plugin has an SSH key that can
   `sudo` on the servers. When someone leaves the team, remove their key from every server
   (`~/.ssh/authorized_keys`) and rotate any shared key.
-- **No shared inventory or locks.** Each teammate's Claude sees the servers fresh each time.
-  Two people can deploy the same site at the same moment, and nothing stops them.
-- **No central audit log.** What ran is in each person's Claude session history and the servers'
-  `auth.log`, not in one place.
-- **The rules are advice; only a few are enforced.** The skill's rules (ask first, don't
-  improvise) are instructions to the model. The scripts enforce input checks and the delete
-  confirmation; the hook enforces the secrets rule for obvious commands. A determined
-  workaround (base64, a script file) gets past a text-matching hook. Keep Claude Code's
-  permission prompts on for Bash.
+- **No shared inventory.** Each teammate's Claude sees the servers fresh each time. The lock on
+  each server stops two changes on the same site at once, but there's no shared list of servers.
+- **No central audit log.** Each server has its own log of changes; there's no single place that
+  shows everything across servers.
+- **Only some rules are enforced.** The guard enforces what it can prove (only reviewed
+  read-only scripts run without a prompt; secrets are denied), and the scripts enforce input
+  checks and the delete confirmation. Other rules (read-only first, no improvising) are
+  instructions to the model. Raw `ssh` is only *asked*, not blocked, and an encoded workaround (base64, a script file) can still hide a secret read from the
+  text checks: read what you approve. Keep Claude Code's permission prompts on for Bash.
 - **Codex gets the skill but not the hook.** See below.
 
 ## Requirements
@@ -102,22 +117,31 @@ plugin hook, so there the secrets rule is advice only.
 .claude-plugin/plugin.json        the plugin
 .claude-plugin/marketplace.json   this repo is also its own marketplace
 skills/server-ops/SKILL.md        when to use it, the rules, the workflows
-skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one script per action
+skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one script per action,
+                                  job-status.sh / job-stop.sh for long jobs
 hooks/hooks.json                  PreToolUse hook on Bash
-hooks/block-secrets.sh            blocks .env and private-key reads
+hooks/servio-guard.pl             the guard: allow / ask / deny (servio-guard.sh starts it)
 tests/                            local tests (no server needed)
 ```
 
-`run.sh` runs on your laptop: it checks the host alias and arguments, then sends `lib.sh` and
-the chosen script over SSH: `cat lib.sh <script> | ssh <host> 'sudo -n bash -s' -- <args>`.
+`run.sh` runs on your laptop: it checks the host alias and arguments, then sends a few
+`SERVIO_*` lines (script name, its SHA-256, the plugin version), `lib.sh` and the chosen script
+over SSH: `… | ssh <host> 'sudo -n bash -s' -- <args>`. Long scripts are wrapped as a job.
+
+Exit codes: 0 done, 1 failed, 2 wrong input, 3 server not ready, 4 refused, 5 missing tool,
+6 could not connect (or the server's host key is unknown or has **changed**).
 
 ## Tests
 
 ```bash
-bash tests/test-scripts.sh   # syntax, validators, nginx config, run.sh refusals
-bash tests/test-hook.sh      # the hook blocks .env / key reads and allows normal commands
+bash tests/test-scripts.sh   # syntax, validators, nginx config, lib.sh building blocks, jobs, run.sh (fake ssh)
+bash tests/test-hook.sh      # the guard's allow / ask / deny decisions
+bash tests/test-skill.sh     # the skill keeps its sections, its rules and its exit-code table
 claude plugin validate .
 ```
+
+`tests/skill-prompts.md` lists prompts that should and shouldn't trigger the skill: try them in
+a session with the plugin installed after changing the skill's description.
 
 ## Server layout (shared with Servio)
 
