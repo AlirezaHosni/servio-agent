@@ -20,30 +20,57 @@ Check it's there: `/plugin` lists `servio-agent` as enabled.
 
 ## 2. Set up SSH so Claude can reach the server
 
-Claude never sees your keys. It runs `ssh <alias>`, and your own SSH config and agent do the rest.
+Claude never sees your keys, the server's address or its user. It only runs `ssh <alias>`
+(always with `BatchMode=yes`: ssh may never stop to ask a question), and your own SSH config does
+the rest. Do everything in this section yourself, in your own terminal, not through Claude.
 
-**a. A key in your SSH agent.** If you don't have a key yet:
+**a. A key ssh can use without asking.** Pick one:
 
-```bash
-ssh-keygen -t ed25519 -C "you@laptop"
+- **You make the key.** On your laptop (never on the server: a private key should be created
+  where it's used, so it's never copied over the network):
+
+  ```bash
+  ssh-keygen -t ed25519 -f ~/.ssh/servio-key -C "you@laptop"
+  ```
+
+  Put the public half (`servio-key.pub`) in the server's `~/.ssh/authorized_keys`: paste it into
+  your provider's "SSH keys" field when you create the server, or, for a server you can reach
+  with a password:
+
+  ```bash
+  cat ~/.ssh/servio-key.pub | ssh root@203.0.113.10 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+  ```
+
+- **Your provider made the key** and you downloaded it (often a `.pem` file). Keep the name and
+  the extension, move it into your `.ssh` folder (e.g. `~/.ssh/servio-test.pem`); the provider has
+  already put its public half on the server. `ssh-keygen -l -f ~/.ssh/servio-test.pem` shows its
+  type (RSA, ED25519...): all of them work.
+
+**Passphrase or not.** A key with a passphrase works only if an SSH agent already holds it,
+because the scripts never type it:
+- macOS: `ssh-add --apple-use-keychain ~/.ssh/servio-key`
+- Linux: `ssh-add ~/.ssh/servio-key` (in a session whose agent Claude Code also uses)
+- **Windows: Claude Code runs Git Bash, and Git Bash's ssh does NOT use Windows' own ssh-agent
+  service.** The simple way is a key **without a passphrase**, used only for these servers and
+  locked to your user (below). Check with step d either way.
+
+On Windows, lock the private key to your user, or ssh refuses it as "unprotected":
+
+```powershell
+icacls $HOME\.ssh\servio-key /inheritance:r /grant:r "${env:USERNAME}:R"
 ```
 
-Load it into the agent (it asks for the passphrase once, then remembers it):
-- macOS: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`
-- Linux: `ssh-add ~/.ssh/id_ed25519`
-- Windows (PowerShell as admin, once): `Get-Service ssh-agent | Set-Service -StartupType Automatic; Start-Service ssh-agent`, then `ssh-add $HOME\.ssh\id_ed25519`
-
-Your public key (`id_ed25519.pub`) must be in the server's `~/.ssh/authorized_keys` (your
-hosting provider usually asks for it when you create the server).
-
-**b. An alias in `~/.ssh/config`** (on Windows: `C:\Users\<you>\.ssh\config`):
+**b. An alias in `~/.ssh/config`.** On Windows that's `C:\Users\<you>\.ssh\config`; open it with
+`notepad $HOME\.ssh\config`. The file has **no extension**: if Notepad saves `config.txt`, rename
+it (`Rename-Item $HOME\.ssh\config.txt config`), or save with the type "All files" and the name
+in quotes, `"config"`.
 
 ```sshconfig
 Host web1
     HostName 203.0.113.10      # the server's IP
-    User root                  # or a user with passwordless sudo
+    User root                  # or a user with passwordless sudo (some providers use "ubuntu")
     Port 22
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/servio-key    # or ~/.ssh/servio-test.pem
     IdentitiesOnly yes
 ```
 
@@ -55,8 +82,23 @@ Host web1
 ssh web1 'sudo -n true && echo sudo works'
 ```
 
+The first time, ssh says the authenticity of the host "can't be established" and shows a
+`SHA256:...` fingerprint. That's normal for a new server. If you can, compare it first: your
+provider's panel may show it, or run `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` in the
+provider's **web console**. Then type `yes`. From now on ssh checks it on every connection, and
+the scripts stop if it ever changes.
+
 You should see `sudo works`. If it asks for a password, the user needs passwordless sudo (or
 use `root`).
+
+**d. Check it works the way the scripts connect** (no questions, through Git Bash on Windows):
+
+```bash
+bash -c "ssh -o BatchMode=yes web1 'echo OK'"
+```
+
+`OK` means Claude can reach the server. "Permission denied" means ssh can't use the key without
+help (a passphrase and no agent, a wrong `IdentityFile`, or the public key isn't on the server).
 
 ## 3. First run: look before you touch
 
@@ -346,7 +388,8 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 
 | You see | It means | Fix |
 |---|---|---|
-| `Permission denied (publickey)` connecting to `web1` | your key isn't in the agent or on the server | `ssh-add -l` should list it; check `authorized_keys` |
+| `Permission denied (publickey)` connecting to `web1` | ssh can't use your key without asking, or it isn't on the server | run step 2d; a key with a passphrase needs an agent (on Windows, Git Bash's ssh doesn't use Windows' ssh-agent: use a key without a passphrase); check `IdentityFile` and `authorized_keys` |
+| `UNPROTECTED PRIVATE KEY FILE` (Windows) | the key file can be read by other users | `icacls` command in step 2a |
 | `Host key verification failed` | first connection, host key unknown | run `ssh web1` by hand once and accept |
 | `sudo: a password is required` | user lacks passwordless sudo | use `root`, or add a `NOPASSWD` sudoers rule |
 | `Permission denied (publickey)` during deploy, from git | the deploy key isn't on the repository | add the `SERVIO_DEPLOY_KEY` line as a deploy key |

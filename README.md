@@ -123,7 +123,9 @@ of these later; the plugin will then talk to Servio instead of SSHing directly.
 ## Requirements
 
 - Claude Code (with Git Bash on Windows, which Claude Code needs anyway)
-- `ssh` with an SSH agent holding your key, and a `Host` alias per server in `~/.ssh/config`
+- `ssh` with a key it can use without asking (in an SSH agent, or on Windows a key without a
+  passphrase: Git Bash's ssh doesn't use Windows' ssh-agent), and a `Host` alias per server in
+  `~/.ssh/config` ([TUTORIAL.md](TUTORIAL.md), step 2)
 - Servers: Ubuntu 22.04, 24.04 or 26.04 LTS; your SSH user is root or has **passwordless sudo**
 - You've connected to each server by hand once (so its host key is known): the scripts never
   answer SSH prompts

@@ -24,9 +24,11 @@ Write `web1` for your server's alias and `shop.example.com` for your test domain
 - [ ] Three fresh VPSs, the smallest size is fine (1-2 GB RAM): **Ubuntu 22.04**, **24.04** and
       **26.04**. Do the full guide on one (24.04 is a good first), then run sections 2-7 and
       section 18 on the other two.
-- [ ] An SSH alias per server in `~/.ssh/config` (for example `web1`, `web2`, `web3`), key in your
-      SSH agent, user = root or a user with passwordless sudo.
+- [ ] An SSH alias per server in `~/.ssh/config` (for example `web1`, `web2`, `web3`), user = root
+      or a user with passwordless sudo. Step by step: TUTORIAL.md, step 2 (the key, Windows
+      details, the config file, the host key).
 - [ ] Connected once by hand to each (`ssh web1`), host key accepted.
+- [ ] `bash -c "ssh -o BatchMode=yes web1 'echo OK'"` prints `OK` for each server.
 - [ ] Note each server's provider: some clouds give only a private address (NAT). That's a test
       for `server-ip.sh` (section 6).
 
@@ -36,8 +38,9 @@ Write `web1` for your server's alias and `shop.example.com` for your test domain
 - [ ] Optional but recommended: the domain's DNS on **Cloudflare** (for section 6).
 
 ### 0.3 A test Laravel project (in a GitHub repo you can delete later)
-It should have:
-- [ ] Laravel 11 or 12, `composer.lock` and `package-lock.json` committed, a Vite build
+Create it with `composer create-project laravel/laravel servio-test-app`, then let Claude build
+the rest in a separate chat: the prompt is in **Appendix A**. It should have:
+- [ ] Laravel 11 or newer (13 is current), `composer.lock` and `package-lock.json` committed, a Vite build
       (`npm run build`).
 - [ ] The default `/up` health route.
 - [ ] One migration that creates a table.
@@ -57,7 +60,24 @@ It should have:
 - [ ] A Slack, Discord or Telegram webhook URL, for alerts (section 16).
 - [ ] A Cloudflare API token, for DNS (section 6).
 
-### 0.5 Recording results
+### 0.5 Running the tests with Claude
+- **Three separate chats**, all in the Code tab (a normal chat can't run ssh on your laptop):
+  1. **Building chat** (in the test app's folder): builds the app from Appendix A and pushes it.
+  2. **Testing chat** (a NEW session in the test app's folder, opened after the push): only uses
+     the plugin. It must not know the plugin's source or this conversation, like a real user's
+     Claude. Start it with the text in **Appendix B**.
+  3. **Fixing chat** (in the plugin's repo): gets the findings, fixes the plugin, adds a test.
+- **Install the plugin from the local folder** in the testing chat, so fixes reach it without a
+  push: `/plugin marketplace add C:\path\to\servio-agent`, `/plugin install servio-agent@servio`,
+  `/reload-plugins`. After a fix: update it from `/plugin` (or reinstall) and check the version.
+- **Model:** Sonnet is enough for building the app and for testing (if a lighter model follows
+  the skill correctly, every model will). Use Opus in the fixing chat.
+- **Permission mode: default (ask)**, never auto: checking the guard's prompts is part of the test.
+- **You judge pass or fail**, by the "Pass if" lines and what you see on the server yourself, not
+  by Claude's summary. The testing chat reports problems as FINDINGs and doesn't work around
+  them; paste each finding into the fixing chat.
+
+### 0.6 Recording results
 Keep a copy of this file, tick what passes, and for every failure write down: the server
 (Ubuntu version), the prompt, the exact output and what you expected. One failure = one fix.
 
@@ -524,3 +544,87 @@ watch for odd errors:
 
 When everything passes on all three versions, the code is ready for a **v1.0.0** release
 (tested and usable on live sites).
+
+---
+
+## Appendix A: the prompt that builds the test app
+
+Paste into the building chat, in the folder made by `composer create-project`.
+
+```text
+This is a small Laravel test app. Its only purpose is to test a server-management tool on real
+Ubuntu servers: provision, deploy, queues, Redis, the scheduler, backups, health checks. Build
+it so each of those can be checked from a browser. Keep it simple and clean; no auth needed.
+
+1. Basics: keep the default /up route. PHP 8.4. Local development uses SQLite; production uses
+   MySQL (configured only through .env, which I write on the server myself). Don't commit .env
+   or any secret. Put production hints in .env.example as comments (DB_CONNECTION=mysql,
+   QUEUE_CONNECTION=redis, CACHE_STORE=redis, REDIS_CLIENT=predis). Use predis
+   (composer require predis/predis), not the phpredis extension.
+2. Data: a "Product" model and migration (name, description, price, stock), a factory and a
+   seeder making 50 products; tables "job_runs" (job, payload, ran_at) and "schedule_runs"
+   (command, ran_at).
+3. Landing page (/): Blade + Tailwind through Vite (npm run build must work; commit
+   package-lock.json). Shows the app name, the 12 newest products, the server's hostname and
+   PHP version, and the live release (from a .servio-release or REVISION file; "unknown" if
+   none).
+4. Queues: job ProcessOrder (sleeps 2 s, adds a job_runs row, writes a line to
+   storage/logs/jobs.log) and SendNewsletter on the "emails" queue (the same, its own name).
+   Routes /dispatch and /dispatch-email dispatch them.
+5. Scheduler: command app:heartbeat (adds a schedule_runs row, writes the time to
+   storage/logs/schedule.log), scheduled every minute in routes/console.php.
+6. Cache: /cache increments a counter with Cache::increment and shows it and the cache store.
+7. /status: database connection and product count, the 10 latest job_runs and schedule_runs,
+   the queue connection, the cache store, and whether Redis answers (show "not reachable"
+   instead of crashing).
+8. Uploads: /upload saves a file to storage/app/public/uploads and lists the files (README:
+   needs php artisan storage:link).
+9. To break on purpose: /boom throws RuntimeException("Test exception from /boom"); /slow sleeps
+   5 seconds.
+10. Horizon for the "default" and "emails" queues; /horizon open to everyone (a throwaway test
+    app: say so in a comment).
+11. Tests (Pest or PHPUnit): / lists products, /up is 200, /dispatch queues ProcessOrder
+    (Queue::fake), /status is 200. A GitHub Actions workflow running composer install, npm ci,
+    npm run build and the tests on PHP 8.4 with SQLite.
+12. A short README: what the app is for, the routes and what each proves, local setup, the .env
+    keys production needs.
+
+When done: run the tests and npm run build, show me the results, and give me the git commands to
+create a private GitHub repository and push (I'll run them myself).
+```
+
+## Appendix B: the text that starts the testing chat
+
+Install the plugin first (section 0.5), fill in the `<...>` parts, then paste:
+
+```text
+I'm testing the servio-agent plugin (installed in this session) on real throwaway servers, step
+by step. This folder is my test Laravel app; its GitHub repo is <git@github.com:me/servio-test-app.git>.
+
+Setup:
+- Server: SSH alias <web1>, Ubuntu <24.04>, a fresh throwaway VPS (it's fine to break it).
+- Domain: <shop.example.com> (and <alias.example.com> for extra-name tests).
+  DNS: <by hand / on Cloudflare>.
+
+How we work:
+- I give you one task at a time, in plain words, like a normal user. Use the servio-agent skill
+  and its scripts for everything on the server, exactly as the skill says: dry run first, then
+  wait for my OK before any change.
+- Don't run raw ssh, scp or your own server commands to do the work. If the skill has no way to
+  do something, say so: that's a finding, not something to work around.
+- Never read or print .env files or keys. I check those myself on the server.
+- Don't fix, patch or work around the plugin, and don't explain a failure away. If something
+  fails, looks wrong or the output is unclear, stop and report it in this format:
+
+  FINDING <number>
+  Task: what I asked
+  Ran: the exact command
+  Expected: what should have happened
+  Got: the exact output (relevant part)
+  Your guess at the cause (clearly marked as a guess)
+
+- I decide what passes or fails. Keep answers short: what ran, what it showed, what's next.
+- At the end of each section I'll ask for a summary of the findings so far.
+
+First task: what's running on <web1>?
+```
