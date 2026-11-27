@@ -1,5 +1,7 @@
 # servio-agent
 
+[![CI](https://github.com/AlirezaHosni/servio-agent/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/AlirezaHosni/servio-agent/actions/workflows/ci.yml)
+
 A Claude Code plugin that does Ploi-like server work over SSH, straight from the agent app:
 list what runs on a server, check its health and security, read logs, find out why a site is
 down, provision a fresh Ubuntu server, create a Laravel site, deploy it from git, give it HTTPS,
@@ -11,8 +13,9 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 
 > **Status: v0.8.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
-> skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
-> throwaway server before you use it on a live one.
+> skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). The real-server
+> test plan is [tests/REAL-SERVER-TESTS.md](tests/REAL-SERVER-TESTS.md). Try it on a throwaway
+> server before you use it on a live one.
 
 ## What it can do
 
@@ -160,7 +163,8 @@ skills/server-ops/scripts/        run.sh (local runner), lib.sh (shared), one sc
 runbooks/                         short notes: Problem, Cause, Fix, Commands (health.sh names them)
 hooks/hooks.json                  PreToolUse hook on Bash
 hooks/servio-guard.pl             the guard: allow / ask / deny (servio-guard.sh starts it)
-tests/                            local tests (no server needed)
+tests/                            local tests (no server needed), REAL-SERVER-TESTS.md
+docs/REQUIREMENTS.md              the full requirements, decisions and roadmap
 ```
 
 `run.sh` runs on your laptop: it checks the host alias and arguments, then sends a few
@@ -181,6 +185,11 @@ claude plugin validate .
 
 `tests/skill-prompts.md` lists prompts that should and shouldn't trigger the skill: try them in
 a session with the plugin installed after changing the skill's description.
+
+These run without a server: fakes stand in for ssh, systemd, curl and the server's files. The
+rest is proved on real servers with [tests/REAL-SERVER-TESTS.md](tests/REAL-SERVER-TESTS.md):
+every feature, step by step, on Ubuntu 22.04, 24.04 and 26.04, including what to break on
+purpose and what counts as a pass.
 
 ## Server layout (shared with Servio)
 
