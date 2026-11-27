@@ -6,7 +6,7 @@ description: Ploi-like work over SSH on the team's Ubuntu servers. See - invento
 # Server ops (servio-agent)
 
 You manage the team's servers over SSH with the bundled scripts, the same way the Servio
-panel does. Every server follows Servio's conventions: Ubuntu 22.04 or 24.04, nginx, one or
+panel does. Every server follows Servio's conventions: Ubuntu 22.04, 24.04 or 26.04, nginx, one or
 more PHP versions, Supervisor. **Every site has its own Linux user** (named from the domain,
 like `s_shopexamplecom_3f2a1b`; inventory shows it), lives in `/home/<user>/<domain>`, and has
 its own PHP-FPM pool and deploy key. One site can't read another's files. Since v0.5 a site
@@ -24,7 +24,7 @@ uses **release folders**: `releases/<time>-<commit>/` (one per deploy), `shared/
   normal development; servers only ever get code through a deploy.
 - The user wants something no script does (databases, workers, cron, editing files on a
   server): say it isn't supported yet; don't improvise it with raw `ssh`.
-- The server isn't the team's (no host alias the user named), or isn't Ubuntu 22.04/24.04.
+- The server isn't the team's (no host alias the user named), or isn't Ubuntu 22.04, 24.04 or 26.04.
 
 ## Rules (always)
 
@@ -184,6 +184,9 @@ repeating the versions the server has). After OK it switches the pool and nginx,
    30 seconds from one address are blocked for a while), 80 and 443.
 4. OK in chat, then the same with `--detach` instead of `--dry-run`, and follow it with
    `job-status.sh`. It takes several minutes.
+5. A server set up before v0.8 uses the old ondrej/php PPA (inventory / security-check flag it;
+   frozen: no PHP security updates). Fix: provision again with ALL its current PHP versions (and
+   `mysql` / `redis` if it has them): it moves PHP to packages.sury.org. Dry run first.
 
 ### Create a site
 1. Ask for the host, domain (lowercase, no `http://`), web directory (default `public`) and PHP
@@ -373,6 +376,6 @@ workers.sh if they should). Deploys still work while suspended (the health check
 ## What this can't do (say so if asked)
 Firewall rule changes; push-to-deploy and Docker sites (planned for later); metrics over
 time (health is a snapshot; alerts only watch); TLS checks from outside, nginx config reviews and
-redirects; telling you a server is down (it can't post then); anything on non-Ubuntu or
-Ubuntu 26.04 servers. No shared state between teammates beyond each server's own lock and log:
+redirects; telling you a server is down (it can't post then); anything on non-Ubuntu
+servers. On 26.04 "Redis" is Valkey (same protocol and port: say so if asked). No shared state between teammates beyond each server's own lock and log:
 there is no central list of servers or central log of who did what.

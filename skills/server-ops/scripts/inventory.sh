@@ -53,6 +53,7 @@ main() {
     failed="$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'         | grep -E '^[A-Za-z0-9@._:-]{1,100}$' | tr '
 ' ' ' || true)"
     [ -z "$failed" ] || problem "server: failed services: ${failed% }"
+    [ -z "$(ppa_source_files)" ] || problem "server: PHP comes from the old ondrej/php PPA (frozen, no security updates): run provision-server.sh with its PHP versions to move to packages.sury.org"
     disk_pct="$(df -P / | awk 'NR==2 {sub(/%/, "", $5); print $5}')"
     [[ "$disk_pct" =~ ^[0-9]+$ ]] && [ "$disk_pct" -ge 90 ] && problem "server: disk / is $disk_pct% full"
 

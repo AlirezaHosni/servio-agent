@@ -9,7 +9,7 @@ reviewed bash scripts on your servers through your own SSH setup.
 The scripts are ported from [Servio](https://github.com/AlirezaHosni/Servio)'s recipes and use
 the same server layout, so a server set up with this plugin can be adopted by Servio later.
 
-> **Status: v0.7.0, not yet tested against a real server.** The scripts' building blocks, the
+> **Status: v0.8.0, not yet tested against a real server.** The scripts' building blocks, the
 > inventory (on a fake server folder), long jobs, run.sh (with a fake ssh), the guard and the
 > skill are tested locally and in CI (`tests/`, `.github/workflows/ci.yml`). Try it on a
 > throwaway server before you use it on a live one.
@@ -26,7 +26,7 @@ the same server layout, so a server set up with this plugin can be adopted by Se
 | "What's in storage/logs?" | `site-files.sh <domain> [folder] [depth]` | No (names only, never contents) |
 | "Is web1 secure?" | `security-check.sh [no-audit]` | No |
 | "How many PHP workers fit on web1?" | `php-sizing.sh [domain]` | No |
-| "Provision web1 with PHP 8.4" | `provision-server.sh <php> [more] [mysql] [redis]` | Yes: installs nginx, PHP-FPM, Composer, Node.js, a firewall; MySQL 8 and Redis when asked |
+| "Provision web1 with PHP 8.4" | `provision-server.sh <php> [more] [mysql] [redis]` | Yes: installs nginx, PHP-FPM (from packages.sury.org), Composer, Node.js 24, a firewall; MySQL and Redis when asked (on 26.04: MySQL 8.4 and Valkey) |
 | "Create shop.example.com on web1" | `create-site.sh` | Yes: site folder, nginx config, deploy key |
 | "What does the shop project need?" | `project-check.sh <domain> [branch] [repo]` | No |
 | "Deploy shop.example.com from main" | `deploy-site.sh` | Yes: a new release folder (composer, npm build, migrations), an instant switch, a health check that switches back on failure, worker restart |
@@ -59,8 +59,9 @@ and ends with a **Problems** list (certificates expiring soon, a pool not runnin
 deployed, failed services, a full disk). `health.sh` ends with **Likely cause** and names a
 runbook from `runbooks/`.
 
-**It can't** (yet): databases, queue workers, cron jobs, zero-downtime deploys, rollbacks,
-restarting services, metrics over time, non-Ubuntu servers or Ubuntu 26.04. It doesn't edit `.env` files, ever: you do that.
+**It can't** (yet): firewall rule changes, push-to-deploy, Docker sites, metrics over time,
+non-Ubuntu servers. It doesn't edit `.env` files by hand, ever: you do that (scripts only set
+the few keys they own, like the database login).
 
 ## How it stays safe
 
@@ -120,7 +121,7 @@ of these later; the plugin will then talk to Servio instead of SSHing directly.
 
 - Claude Code (with Git Bash on Windows, which Claude Code needs anyway)
 - `ssh` with an SSH agent holding your key, and a `Host` alias per server in `~/.ssh/config`
-- Servers: Ubuntu 22.04 or 24.04 LTS; your SSH user is root or has **passwordless sudo**
+- Servers: Ubuntu 22.04, 24.04 or 26.04 LTS; your SSH user is root or has **passwordless sudo**
 - You've connected to each server by hand once (so its host key is known): the scripts never
   answer SSH prompts
 - For backups: [age](https://github.com/FiloSottile/age) on your laptop and a key pair (`age-keygen`); its public key in `~/ServioBackups/recipients.txt`

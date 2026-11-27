@@ -23,7 +23,7 @@ main() {
         nginx) unit="nginx"; action="reload"; test="nginx -t" ;;
         php8.3|php8.4|php8.5) validate_php "${service#php}"; unit="$service-fpm"; action="reload"; test="php-fpm${service#php} -t" ;;
         mysql) unit="mysql"; action="restart" ;;
-        redis) unit="redis-server"; action="restart" ;;
+        redis) unit="$(redis_unit)" || die_state "Neither Redis nor Valkey is installed here."; action="restart" ;;
         supervisor) unit="supervisor"; action="restart" ;;
         workers)
             [ -n "$domain" ] || die_input "workers needs the domain: restart-service.sh workers <domain>"

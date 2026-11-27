@@ -6,7 +6,7 @@ domain for destructive steps, never read or print secrets).
 
 ## Database for a site (MySQL)
 1. MySQL must be on the server: inventory / security-check show it. If not:
-   `provision-server.sh <php> mysql` (add `redis` for Horizon or Redis queues/cache), dry run
+   `provision-server.sh <php> mysql` (add `redis` for Horizon or Redis queues/cache; on Ubuntu 26.04 that installs Valkey, which Laravel uses the same way), dry run
    first. The server's other PHP versions must be repeated (`8.4 8.3 mysql`), or only the first
    stays the default.
 2. Dry run: `run.sh <host> database.sh <domain> create --dry-run`: what exists and what it

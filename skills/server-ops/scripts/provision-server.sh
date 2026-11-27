@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# provision-server.sh: turn a fresh Ubuntu 22.04/24.04 server into one that hosts PHP sites.
+# provision-server.sh: turn a fresh Ubuntu 22.04, 24.04 or 26.04 server into one that hosts PHP sites.
 #
 #   bash run.sh <host> provision-server.sh [default-php] [more-php...] [mysql] [redis] [--dry-run]
 #   bash run.sh web1 provision-server.sh 8.4            one PHP version (8.3, 8.4 or 8.5)
 #   bash run.sh web1 provision-server.sh 8.4 8.3        8.4 is the default, 8.3 installed too
-#   bash run.sh web1 provision-server.sh 8.4 mysql redis   + MySQL 8 and Redis (v0.6; also later)
+#   bash run.sh web1 provision-server.sh 8.4 mysql redis   + MySQL and Redis (v0.6; also later)
+#     (Ubuntu 26.04: MySQL 8.4 instead of 8.0, and Valkey instead of Redis: same protocol and port)
 #
-# Installs nginx, PHP-FPM (from the ondrej PPA) in every version asked for, Composer, Node.js, git,
+# Installs nginx, PHP-FPM (from packages.sury.org) in every version asked for, Composer, Node.js, git,
 # Supervisor (it runs queue workers later) and a firewall (UFW). Ported from Servio's ProvisionServer.
 # Sites are NOT run by a shared user any more: create-site.sh gives each site its own Linux user
 # and PHP-FPM pool (decision 6). Each PHP version's default "www" pool is set to start no
@@ -48,7 +49,6 @@ main() {
     [ "${ID:-}" = "ubuntu" ] || die_state "Only Ubuntu is supported (this is: ${PRETTY_NAME:-unknown})."
     # Is VERSION_ID one of the words in $UBUNTU_VERSIONS? The spaces around both sides make
     # "24.04" match only the whole word (and an empty VERSION_ID match nothing).
-    # Not 26.04 yet: the ondrej Launchpad PPA doesn't carry it.
     case " $UBUNTU_VERSIONS " in
         *" ${VERSION_ID:-} "*) ;;
         *) die_state "Ubuntu ${VERSION_ID:-unknown} isn't supported yet. Use one of: $UBUNTU_VERSIONS (LTS)." ;;
@@ -65,15 +65,30 @@ main() {
     # A server-wide change: one at a time (the same lock mechanism as sites, named "server").
     lock_site "server"
 
+    # FIRST, before any apt-get update: a server set up before v0.8 has the old ondrej/php PPA,
+    # which is frozen and whose changed label can make apt-get update fail.
+    step "PHP's package source: the old PPA"
+    retire_ppa
+    [ -n "$(ppa_source_files)" ] || dry_run || echo "None (good)."
+
     step "Installing base packages"
     apt_get update
-    apt_get install software-properties-common ca-certificates curl git unzip ufw supervisor gnupg age
+    # cron: the sites' schedulers (/etc/cron.d); not on every minimal image.
+    apt_get install ca-certificates curl git unzip ufw supervisor gnupg age cron
 
-    step "Adding the ondrej/php package source"
-    if ! grep -rqs "ondrej/php" /etc/apt/sources.list.d/; then
-        run add-apt-repository -y ppa:ondrej/php
-    else
+    step "PHP's package source: packages.sury.org"
+    [[ "${VERSION_CODENAME:-}" =~ ^[a-z]{3,20}$ ]] || die_state "Couldn't read Ubuntu's codename from /etc/os-release."
+    if has_sury_source && dpkg -s "$SURY_KEYRING_PACKAGE" >/dev/null 2>&1; then
         echo "Already added."
+    elif dry_run; then
+        echo "[dry-run] would take sury's signing key from its keyring package (key file only, no install"
+        echo "          scripts), add: $(sury_source_line "$VERSION_CODENAME")"
+        echo "          and install $SURY_KEYRING_PACKAGE from that repository (it keeps the key up to date)"
+    else
+        [ -s "$SURY_KEYRING" ] || bootstrap_sury_keyring
+        sury_source_line "$VERSION_CODENAME" | write_file "$SURY_LIST" 644 root:root
+        apt_get update
+        apt_get install "$SURY_KEYRING_PACKAGE"
     fi
     apt_get update
 
@@ -111,6 +126,10 @@ main() {
     # Ubuntu's own nodejs is too old for Vite (22.04: Node 12, 24.04: Node 18). NodeSource's apt
     # source, with its signing key in /etc/apt/keyrings: apt checks every package against it.
     # (Not `curl ... | bash`: nothing downloaded is executed.)
+    # NodeSource's package must win over Ubuntu's own nodejs: on 26.04 Ubuntu's version string
+    # ("22.22.1+dfsg...") sorts ABOVE NodeSource's same release ("22.22.1-1nodesource1").
+    printf '%s\n' "$MANAGED_HEADER (provision-server.sh)" "Package: nodejs" "Pin: origin deb.nodesource.com" "Pin-Priority: 600" \
+        | write_file /etc/apt/preferences.d/nodesource 644 root:root
     local node_major
     node_major="$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || true)"
     if [[ "$node_major" =~ ^[0-9]+$ ]] && [ "$node_major" -ge "$NODE_MAJOR" ]; then
@@ -140,7 +159,7 @@ main() {
     run systemctl enable --now supervisor
 
     if [ "$with_mysql" -eq 1 ]; then
-        step "MySQL 8 (Ubuntu's package)"
+        step "MySQL (Ubuntu's package: 8.0 on 22.04 and 24.04, 8.4 LTS on 26.04)"
         # Ubuntu's MySQL listens on 127.0.0.1 only and lets the OS root user in through its socket
         # (auth_socket): scripts run `mysql` as root with no password anywhere. Sites get their
         # own users and passwords (database.sh).
@@ -148,10 +167,12 @@ main() {
         run systemctl enable --now mysql
     fi
     if [ "$with_redis" -eq 1 ]; then
-        step "Redis"
-        # Ubuntu's Redis listens on 127.0.0.1 and ::1 with protected mode on: nothing from outside.
-        apt_get install redis-server
-        run systemctl enable --now redis-server
+        step "Redis ($(redis_unit_for "$VERSION_ID"))"
+        # Ubuntu's Redis (Valkey on 26.04) listens on 127.0.0.1 and ::1 with protected mode on:
+        # nothing from outside. Laravel connects to it the same way (port 6379).
+        # shellcheck disable=SC2046
+        apt_get install $(redis_packages "$VERSION_ID")
+        run systemctl enable --now "$(redis_unit_for "$VERSION_ID")"
     fi
 
     step "Starting nginx"
@@ -203,10 +224,12 @@ main() {
         if [ -n "$listen" ] && ! printf '%s' "$listen" | grep -qE '(^| )(0\.0\.0\.0|\*|\[::\]):3306'; then check_pass "MySQL only on this server" "$listen"; else check_fail "MySQL only on this server" "${listen:-not listening}"; fi
     fi
     if [ "$with_redis" -eq 1 ]; then
-        if [ "$(redis-cli ping 2>/dev/null)" = "PONG" ]; then check_pass "Redis running"; else check_fail "Redis running"; fi
+        if [ "$(redis_cli ping 2>/dev/null)" = "PONG" ]; then check_pass "Redis running" "$(redis_unit_for "$VERSION_ID")"; else check_fail "Redis running"; fi
         listen="$(ss -Hltn 2>/dev/null | awk '$4 ~ /:6379$/ { print $4 }' | tr '\n' ' ')"
         if [ -n "$listen" ] && ! printf '%s' "$listen" | grep -qE '(^| )(0\.0\.0\.0|\*|\[::\]):6379'; then check_pass "Redis only on this server" "$listen"; else check_fail "Redis only on this server" "${listen:-not listening}"; fi
     fi
+    if has_sury_source && [ -z "$(ppa_source_files)" ]; then check_pass "PHP from packages.sury.org" "the old PPA is gone"
+    else check_fail "PHP from packages.sury.org" "the source is missing or the old PPA is still there"; fi
     check_summary || die "Provisioning finished, but something isn't right (see above)."
 
     step "Done"

@@ -3,7 +3,7 @@
 This takes you from nothing to a Laravel site on HTTPS, with Claude doing the server work.
 About 20 minutes, most of it waiting for installs and DNS.
 
-You need: Claude Code, a fresh **Ubuntu 22.04 or 24.04** server you can SSH into, a domain
+You need: Claude Code, a fresh **Ubuntu 22.04, 24.04 or 26.04** server you can SSH into, a domain
 whose DNS you can change, and a Laravel app in a git repository (GitHub in the examples).
 
 ## 1. Install the plugin
@@ -79,9 +79,15 @@ keeps going even if your laptop sleeps. Safe to run again if it fails halfway.
 Need another PHP version too? "Provision web1 with PHP 8.4 and 8.3": 8.4 is the default, and each
 site can choose either.
 
-Need a database or Redis? "Provision web1 with PHP 8.4, MySQL and Redis" adds MySQL 8 and Redis,
+Need a database or Redis? "Provision web1 with PHP 8.4, MySQL and Redis" adds MySQL and Redis,
 both listening only on the server itself. MySQL's admin login works only as root on the server
-(no admin password exists anywhere).
+(no admin password exists anywhere). On Ubuntu 26.04 you get MySQL 8.4 and **Valkey** instead
+of Redis (Ubuntu no longer ships Redis): it speaks the same protocol on the same port, so
+Laravel's `redis` settings, queues and Horizon work unchanged.
+
+PHP comes from packages.sury.org. A server set up before v0.8 used the old ondrej/php PPA,
+which is frozen (no more security updates): inventory and "Is web1 secure?" point it out, and
+provisioning again with the server's PHP versions moves it over.
 
 ## 5. Create the site
 
@@ -350,7 +356,8 @@ it run. Remove the deploy key from GitHub afterwards. MySQL databases are not to
 | `… is proxied through Cloudflare` (SSL) | Cloudflare's "Always Use HTTPS" redirects Let's Encrypt | turn it off until the certificate exists, or `dns.sh … --dns-only` first |
 | Cloudflare: "too many redirects" | SSL mode Flexible | Cloudflare > SSL/TLS > Full (strict) |
 | `servio-agent: … touches a .env file` (denied) | the guard stopped a command touching a secret | expected; do that part yourself |
-| `isn't supported yet` | not Ubuntu 22.04/24.04 | use a supported server |
+| `isn't supported yet` | not Ubuntu 22.04, 24.04 or 26.04 | use a supported server |
+| `still uses the old ondrej/php PPA` | server set up before v0.8 | provision again with its PHP versions (dry run first) |
 | php-sizing: `no PHP workers running right now` | pools start workers only on requests | run it again while the sites have traffic |
 | security-check: `composer audit … NOT ASSESSED` | the server can't reach packagist.org | check outgoing internet, or use `no-audit` |
 | health: `NOT ASSESSED` lines | a tool or log isn't there (e.g. no ufw) | expected on unprovisioned servers; never read as PASS |

@@ -44,6 +44,11 @@ main() {
         return 0
     fi
 
+    # The old ondrej/php PPA (servers set up before v0.8) is frozen, and its changed label can make
+    # apt-get update fail. Switching the source is provision's job: say so instead of half-updating.
+    if [ -n "$(ppa_source_files)" ]; then
+        die_state "This server still uses the old ondrej/php PPA (frozen: no PHP security updates). Switch it first: provision-server.sh <its PHP versions> --dry-run, then for real (it moves PHP to packages.sury.org). Then update."
+    fi
     step "Refreshing the package lists (apt-get update)"
     apt-get -o DPkg::Lock::Timeout=600 update -qq
     local pending security
@@ -77,7 +82,7 @@ main() {
 # services_up: the services that matter that run now (checked again after the update).
 services_up() {
     local s out=""
-    for s in nginx mysql mariadb redis-server supervisor $(for v in $PHP_VERSIONS; do echo "php$v-fpm"; done); do
+    for s in nginx mysql mariadb redis-server valkey-server supervisor $(for v in $PHP_VERSIONS; do echo "php$v-fpm"; done); do
         systemctl is-active --quiet "$s" 2>/dev/null && out="$out $s"
     done
     echo "$out"

@@ -1222,6 +1222,81 @@ out="$(dns web1 remove shop.example.com shop.example.com)"
 out="$(dns web1 show shop.example.com)"; [[ "$out" == *"A shop.example.com -> 203.0.113.10 (proxied: true)  <- this server"* && "$out" == *"198.51.100.99 (proxied: false)"* ]] && [ -z "$(calls)" ] \
     && ok "dns show: records, which point here, read-only" || bad "show: $out"
 
+echo "== PHP from packages.sury.org instead of the frozen PPA (v0.8 Part A)"
+AP="$T/apt"; mkdir -p "$AP/src" "$AP/bak"
+echo "deb https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ noble main" > "$AP/src/ondrej-ubuntu-php-noble.list"
+printf 'Types: deb\nURIs: https://ppa.launchpadcontent.net/ondrej/php/ubuntu/\nSuites: noble\n' > "$AP/src/ondrej-ubuntu-php-noble.sources"
+echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ noble main" > "$AP/src/php.list"
+echo "deb https://deb.nodesource.com/node_22.x nodistro main" > "$AP/src/nodesource.list"
+out="$( (source "$S/lib.sh"; ppa_source_files "$AP/src") 2>&1)"
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 2 ] && [[ "$out" == *ondrej-ubuntu-php-noble.list* && "$out" == *ondrej-ubuntu-php-noble.sources* ]] \
+    && ok "the old PPA is found in .list and .sources files (sury and others are not)" || bad "ppa_source_files: $out"
+(source "$S/lib.sh"; has_sury_source "$AP/src") && ok "packages.sury.org is recognised" || bad "has_sury_source"
+[ "$( (source "$S/lib.sh"; sury_source_line resolute) )" = "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ resolute main" ] \
+    && ok "sury's source line: signed-by its keyring, the Ubuntu codename as suite (as sury's README)" || bad "sury line"
+out="$( (source "$S/lib.sh"; APT_SOURCES_DIR="$AP/src"; APT_BACKUP_DIR="$AP/bak"; DRY_RUN=1; retire_ppa) 2>&1)"
+[ -f "$AP/src/ondrej-ubuntu-php-noble.list" ] && [[ "$out" == *"[dry-run] would move"* ]] && ok "retire PPA dry run: lists the files, moves nothing" || bad "retire dry: $out"
+out="$( (source "$S/lib.sh"; APT_SOURCES_DIR="$AP/src"; APT_BACKUP_DIR="$AP/bak"; install() { mkdir -p "${@: -1}"; }; retire_ppa; ppa_source_files) 2>&1)"
+[ ! -e "$AP/src/ondrej-ubuntu-php-noble.list" ] && [ ! -e "$AP/src/ondrej-ubuntu-php-noble.sources" ] && [ -f "$AP/src/php.list" ] && [ -f "$AP/src/nodesource.list" ] \
+    && [ "$(ls "$AP/bak" | grep -c ondrej)" = 2 ] && ok "retire PPA: its files move to /var/backups (undo by hand); other sources stay" || bad "retire: $out / $(ls "$AP/src" "$AP/bak")"
+p="$S/provision-server.sh"
+[ "$(grep -n 'retire_ppa$' "$p" | cut -d: -f1)" -lt "$(grep -n 'apt_get update' "$p" | head -n 1 | cut -d: -f1)" ] \
+    && ok "provision retires the PPA BEFORE the first apt-get update (its label can make update fail)" || bad "retire order"
+! grep -qE 'add-apt-repository|software-properties-common' "$p" && ok "provision no longer adds any PPA" || bad "PPA still added"
+KB="$T/kb"; mkdir -p "$KB"
+kb() { (source "$S/lib.sh"; SURY_KEYRING="$KB/keyring.gpg"; curl() { echo deb > "${@: -2:1}"; }
+        dpkg-deb() { case "$1" in -f) echo "${FAKE_PKG:-debsuryorg-archive-keyring}" ;; -x) mkdir -p "$3$KB"; [ -n "${FAKE_NOKEY:-}" ] || echo KEY > "$3$KB/keyring.gpg" ;; esac; }
+        install() { cp "${@: -2:1}" "${@: -1}"; }; gpg() { echo "fpr:::::::::ABCDEF0123:"; }; bootstrap_sury_keyring) 2>&1; }
+out="$(FAKE_PKG=evil-package kb)"; [ $? = 4 ] && [ ! -f "$KB/keyring.gpg" ] && ok "sury keyring: a download that isn't sury's keyring package is refused" || bad "kb name: $out"
+out="$(FAKE_NOKEY=1 kb)"; [ $? = 4 ] && ok "sury keyring: a package without the key file is refused" || bad "kb nokey: $out"
+out="$(kb)"; [ $? = 0 ] && [ "$(cat "$KB/keyring.gpg")" = KEY ] && [[ "$out" == *"Signing key(s): ABCDEF0123"* ]] \
+    && ok "sury keyring: only the key file is taken (dpkg-deb -x, no install scripts run); fingerprint shown" || bad "kb ok: $out"
+grep -q 'dpkg-deb -x' "$S/lib.sh" && ! grep -q 'dpkg -i' "$S/lib.sh" "$p" && grep -q 'apt_get install "$SURY_KEYRING_PACKAGE"' "$p" \
+    && ok "the keyring PACKAGE is then installed by apt from the signed repository (keeps the key current)" || bad "kb package"
+echo "deb https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ noble main" > "$AP/src/again.list"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/updates.sh"); APT_SOURCES_DIR="$AP/src"; require_root() { :; }; lock_site() { :; }; apt-get() { echo "APT RAN"; }; main upgrade) 2>&1)"; rc=$?
+[ "$rc" = 3 ] && [[ "$out" == *"old ondrej/php PPA"* && "$out" != *"APT RAN"* ]] && ok "updates: refuses on a server still using the PPA, before apt-get update" || bad "updates ppa: $rc $out"
+SE="$T/secetc"; mkdir -p "$SE/apt/sources.list.d" "$SE/apt/apt.conf.d"; cp "$AP/src/again.list" "$SE/apt/sources.list.d/"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/security-check.sh"); ETC_DIR="$SE"; apt() { :; }; check_updates) 2>&1)"
+[[ "$out" == *"FAIL          PHP package source: the old ondrej/php PPA"* ]] && ok "security-check: the old PPA is a FAIL with the fix" || bad "seccheck ppa: $out"
+rm "$SE/apt/sources.list.d/again.list"; cp "$AP/src/php.list" "$SE/apt/sources.list.d/"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/security-check.sh"); ETC_DIR="$SE"; apt() { :; }; check_updates) 2>&1)"
+[[ "$out" == *"PASS          PHP package source: packages.sury.org"* ]] && ok "security-check: packages.sury.org passes" || bad "seccheck sury: $out"
+
+echo "== Ubuntu 26.04 (v0.8 Part B)"
+(source "$S/lib.sh"; [[ " $UBUNTU_VERSIONS " == *" 22.04 "* && " $UBUNTU_VERSIONS " == *" 24.04 "* && " $UBUNTU_VERSIONS " == *" 26.04 "* ]]) && ok "supported: Ubuntu 22.04, 24.04 and 26.04" || bad "UBUNTU_VERSIONS"
+out="$( (source "$S/lib.sh"; echo "$(redis_packages 22.04)|$(redis_packages 24.04)|$(redis_packages 26.04)|$(redis_unit_for 26.04)") 2>&1)"
+[ "$out" = "redis-server|redis-server|valkey-server valkey-tools|valkey-server" ] && ok "redis: Redis on 22.04/24.04, Valkey on 26.04 (no Redis package there)" || bad "redis_packages: $out"
+out="$( (source "$S/lib.sh"; systemctl() { [ "$1 $2" = "cat valkey-server.service" ]; }; redis_unit) 2>&1)"
+[ "$out" = "valkey-server" ] && ok "the installed one is found (redis-server or valkey-server)" || bad "redis_unit: $out"
+(source "$S/lib.sh"; systemctl() { return 1; }; redis_unit) >/dev/null 2>&1 && bad "redis_unit with neither" || ok "neither installed: redis_unit fails"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/restart-service.sh"); DRY_RUN=1; require_root() { :; }; lock_site() { :; }
+    systemctl() { [ "$1 $2" = "cat valkey-server.service" ]; }; main redis) 2>&1)"
+[[ "$out" == *valkey-server* && "$out" != *redis-server* ]] && ok "restart-service redis restarts Valkey on a 26.04 server" || bad "restart valkey: $out"
+grep -q 'redis-server valkey-server supervisor' "$S/reboot.sh" && grep -q 'redis-server valkey-server supervisor' "$S/updates.sh" \
+    && ok "reboot check and updates check know valkey-server" || bad "valkey lists"
+for nv in 1.18.0:no 1.24.0:no 1.25.0:no 1.25.1:yes 1.28.3:yes 2.0.0:yes; do
+    FAKE_NGINX="${nv%%:*}"
+    got="$( (source "$S/lib.sh"; nginx() { echo "nginx version: nginx/$FAKE_NGINX (Ubuntu)" >&2; }; nginx_has_http2_directive && echo yes || echo no) 2>/dev/null)"
+    [ "$got" = "${nv##*:}" ] || bad "http2 directive for nginx ${nv%%:*}: $got"
+done; ok "nginx 1.25.1+ gets 'http2 on;', older nginx the 'listen ... http2' form"
+h2() { FAKE_NGINX="$1"; (source "$S/lib.sh"; LETSENCRYPT_DIR=/etc/letsencrypt; SITE_WWW="www.shop.example.com"; nginx() { echo "nginx version: nginx/$FAKE_NGINX" >&2; }; nginx_https_config shop.example.com /x/current/public 8.4) 2>&1; }
+new="$(h2 1.28.3)"; old="$(h2 1.24.0)"
+[ "$(printf '%s\n' "$new" | grep -c '^    http2 on;$')" = 2 ] && ! printf '%s' "$new" | grep -q 'ssl http2' && printf '%s' "$new" | grep -q '^    listen 443 ssl;$' \
+    && [ "$(printf '%s\n' "$old" | grep -c 'listen 443 ssl http2;')" = 2 ] && ! printf '%s' "$old" | grep -q 'http2 on' \
+    && ok "HTTPS config: 26.04's nginx 1.28 gets 'http2 on;' in both server blocks, 24.04's 1.24 the old form" || bad "h2: $new"
+out="$( (source "$S/lib.sh"; source <(sed '/^servio_run "\$@"$/d' "$S/logs.sh"); auth_summary 'Nov 23 10:00:00 web1 sshd-auth[100]: Failed password for root from 192.0.2.77 port 1 ssh2' 50) 2>&1)"
+[[ "$out" == *"1  192.0.2.77"* ]] && ok "SSH log lines from OpenSSH 10's sshd-auth are read too" || bad "sshd-auth: $out"
+SR="$T/sudors"; mkdir -p "$SR"
+printf '#!/usr/bin/env bash\ncat > /dev/null; echo "sudo-rs: interactive authentication is required" >&2; exit 1\n' > "$SR/ssh"; chmod +x "$SR/ssh"
+out="$(PATH="$SR:$PATH" bash "$S/run.sh" web1 inventory.sh 2>&1)"; rc=$?
+[ "$rc" = 3 ] && [[ "$out" == *"passwordless sudo"* ]] && ok "run.sh: sudo-rs's 'authentication is required' is read like sudo's (exit 3)" || bad "sudo-rs: $rc $out"
+p="$S/provision-server.sh"
+grep -q 'Pin: origin deb.nodesource.com' "$p" && grep -q 'Pin-Priority: 600' "$p" && ok "provision pins NodeSource's nodejs above Ubuntu's (26.04 sorts Ubuntu's higher)" || bad "node pin"
+(source "$S/lib.sh"; [ "$NODE_MAJOR" = 24 ]) && ok "Node.js 24 LTS (22 ends April 2027)" || bad "NODE_MAJOR"
+grep -qE 'apt_get install ca-certificates .* cron$' "$p" && ok "provision installs cron (the schedulers need it; not on every minimal image)" || bad "cron"
+grep -q 'apt_get install $(redis_packages "$VERSION_ID")' "$p" && grep -q 'redis_cli ping' "$p" && ok "provision's redis option installs and checks Redis or Valkey by Ubuntu version" || bad "provision redis"
+
 echo "== Long jobs (item 45), in the foreground fallback (no systemd in tests)"
 stub='require_root() { :; }; has_systemd() { false; }; JOBS_DIR='"$T"'/jobs'
 { cat "$S/lib.sh"; echo "$stub"; echo "SERVIO_SCRIPT_NAME=deploy-site.sh"; echo "servio_launch_job a b <<'M1'"

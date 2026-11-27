@@ -57,6 +57,11 @@ check_updates() {
     n="$(apt list --upgradable 2>/dev/null | grep -c -- '-security' || true)"
     if [ "${n:-0}" -gt 0 ]; then check_warn "security updates" "$n waiting"
     else check_pass "security updates" "none waiting"; fi
+    if [ -n "$(ppa_source_files "$ETC_DIR/apt/sources.list.d")" ]; then
+        check_fail "PHP package source" "the old ondrej/php PPA: frozen, no more PHP security updates. Fix: provision-server.sh <PHP versions> (moves to packages.sury.org)"
+    elif has_sury_source "$ETC_DIR/apt/sources.list.d"; then
+        check_pass "PHP package source" "packages.sury.org"
+    fi
     if grep -qsE '^\s*APT::Periodic::Unattended-Upgrade\s+"1"' "$ETC_DIR"/apt/apt.conf.d/*; then
         check_pass "automatic security updates" "on"
     else

@@ -194,7 +194,9 @@ if [ "$rc" -eq 255 ]; then
     fi
     exit 6
 fi
-if [ "$rc" -eq 1 ] && grep -q "sudo: a password is required" "$SSH_ERR"; then
+# sudo says "a password is required"; sudo-rs (Ubuntu 26.04) words it "interactive authentication
+# is required".
+if [ "$rc" -eq 1 ] && grep -qiE "sudo(-rs)?: .*(a password is required|authentication is required)" "$SSH_ERR"; then
     echo "The SSH user on '$HOST' needs passwordless sudo (or use root). Nothing was run." >&2
     exit 3
 fi

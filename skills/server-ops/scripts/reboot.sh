@@ -45,7 +45,7 @@ main() {
 # running_now: "service <name>" and "worker <program>" lines for what runs.
 running_now() {
     local s v
-    for s in nginx mysql mariadb redis-server supervisor fail2ban cron $(for v in $PHP_VERSIONS; do echo "php$v-fpm"; done); do
+    for s in nginx mysql mariadb redis-server valkey-server supervisor fail2ban cron $(for v in $PHP_VERSIONS; do echo "php$v-fpm"; done); do
         systemctl is-active --quiet "$s" 2>/dev/null && echo "service $s"
     done
     if command -v supervisorctl >/dev/null 2>&1; then

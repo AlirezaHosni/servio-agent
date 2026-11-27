@@ -36,7 +36,7 @@ export GIT_TERMINAL_PROMPT=0 COMPOSER_NO_INTERACTION=1
 HOME_BASE="/home"                # site users' home folders: /home/<user>
 PHP_ETC_DIR="/etc/php"           # PHP's config: /etc/php/<version>/fpm/pool.d/<user>.conf
 PHP_VERSIONS="8.3 8.4 8.5"
-UBUNTU_VERSIONS="22.04 24.04"
+UBUNTU_VERSIONS="22.04 24.04 26.04"
 ACME_ROOT="/var/www/letsencrypt"
 # Where nginx and certbot keep their files (variables so tests can point them at a fake server).
 NGINX_DIR="/etc/nginx"
@@ -45,7 +45,7 @@ MANAGED_HEADER="# Managed by Servio"
 ACTION_LOG="/var/log/servio-agent.log"
 LOGROTATE_FILE="/etc/logrotate.d/servio-agent"
 LOCK_DIR="/run/lock/servio-agent"
-NODE_MAJOR=22                          # Node.js LTS installed by provision (Vite needs 20+)
+NODE_MAJOR=24                          # Node.js LTS installed by provision (Vite needs 20+; 22 ends April 2027)
 
 # ---------------------------------------------------------------------------------------------
 # Exit codes (item 50). The same number always means the same thing, so Claude can explain a
@@ -662,7 +662,8 @@ nginx_http_config() {
 
 # $1 domain, $2 web root, $3 PHP version
 nginx_https_config() {
-    local live="$LETSENCRYPT_DIR/live/$1"
+    local live="$LETSENCRYPT_DIR/live/$1" http2=old
+    nginx_has_http2_directive && http2=new
     echo "$MANAGED_HEADER. Changes made by hand are overwritten when the site is updated."
     nginx_meta_lines
     echo "# Port 80: Let's Encrypt's checks (first issue and renewals), and a redirect to HTTPS."
@@ -677,9 +678,8 @@ nginx_https_config() {
     echo "}"
     echo
     echo "server {"
-    # `listen ... ssl http2`: the syntax Ubuntu's nginx understands (1.18 on 22.04, 1.24 on 24.04).
-    echo "    listen 443 ssl http2;"
-    echo "    listen [::]:443 ssl http2;"
+    # The http2 syntax depends on the nginx version (nginx_has_http2_directive).
+    nginx_listen_443 "$http2"
     echo "    server_name $(site_names "$1");"
     echo
     echo "    # Made by certbot. The private key never leaves this server."
@@ -692,8 +692,7 @@ nginx_https_config() {
         echo
         echo "# $SITE_WWW -> $1 (same certificate: it covers both names)."
         echo "server {"
-        echo "    listen 443 ssl http2;"
-        echo "    listen [::]:443 ssl http2;"
+        nginx_listen_443 "$http2"
         echo "    server_name $SITE_WWW;"
         echo "    ssl_certificate     $live/fullchain.pem;"
         echo "    ssl_certificate_key $live/privkey.pem;"
@@ -712,6 +711,110 @@ nginx_current_config() {
         nginx_https_config "$@"
     else
         nginx_http_config "$@"
+    fi
+}
+
+# PHP's package source (v0.8). Ondřej Surý's PHP packages moved from the Launchpad PPA
+# (ppa:ondrej/php, now FROZEN: no more updates, security fixes included; its changed release
+# label can even make `apt-get update` fail) to packages.sury.org/php, one repository for
+# Ubuntu 22.04 (jammy), 24.04 (noble) and 26.04 (resolute).
+APT_SOURCES_DIR="/etc/apt/sources.list.d"
+SURY_KEYRING="/usr/share/keyrings/debsuryorg-archive-keyring.gpg"
+SURY_KEYRING_PACKAGE="debsuryorg-archive-keyring"
+SURY_KEYRING_DEB_URL="https://packages.sury.org/debsuryorg-archive-keyring.deb"
+SURY_LIST="$APT_SOURCES_DIR/php.list"
+PPA_PATTERN='ppa\.launchpad(content)?\.net/ondrej/php|ppa:ondrej/php'
+APT_BACKUP_DIR="/var/backups/servio-agent"
+
+# ppa_source_files [dir]: the apt source files that still use the old PPA (one per line).
+ppa_source_files() {
+    local dir="${1:-$APT_SOURCES_DIR}"
+    grep -lsE "$PPA_PATTERN" "$dir"/*.list "$dir"/*.sources 2>/dev/null || true
+}
+has_sury_source() {
+    local dir="${1:-$APT_SOURCES_DIR}"
+    grep -qsF 'packages.sury.org/php' "$dir"/*.list "$dir"/*.sources 2>/dev/null
+}
+sury_source_line() { echo "deb [signed-by=$SURY_KEYRING] https://packages.sury.org/php/ $1 main"; }
+
+# retire_ppa: move the old PPA's source files out of apt's folder (kept in /var/backups, so it
+# can be undone by hand). It must run BEFORE the first `apt-get update`.
+retire_ppa() {
+    local files f
+    files="$(ppa_source_files)"
+    [ -n "$files" ] || return 0
+    echo "The old ondrej/php PPA is still set up (frozen: no more PHP updates):"
+    printf '%s\n' "$files" | sed 's/^/  /'
+    if dry_run; then
+        echo "[dry-run] would move these to $APT_BACKUP_DIR (apt stops reading them) and use packages.sury.org"
+        return 0
+    fi
+    install -d -m 700 "$APT_BACKUP_DIR"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        mv -f "$f" "$APT_BACKUP_DIR/$(basename "$f").$(date +%Y%m%d%H%M%S)"
+    done <<< "$files"
+    echo "Moved to $APT_BACKUP_DIR."
+}
+
+# bootstrap_sury_keyring: the FIRST copy of sury's signing key, from sury's keyring package
+# over HTTPS (as its README does). Only the key file is taken out of the .deb (dpkg-deb -x):
+# none of the package's install scripts run as root. Then the keyring PACKAGE is installed by
+# apt from the repository it now trusts (signed), so future key changes arrive as updates.
+bootstrap_sury_keyring() {
+    local deb dir name
+    deb="$(mktemp)"; dir="$(mktemp -d)"
+    add_exit_hook "rm -rf '$deb' '$dir'"
+    curl -fsSL --max-time 60 -o "$deb" "$SURY_KEYRING_DEB_URL" || die "Couldn't download sury's keyring package."
+    name="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+    [ "$name" = "$SURY_KEYRING_PACKAGE" ] || die_refused "The download isn't the $SURY_KEYRING_PACKAGE package ('$name'). Not using it."
+    dpkg-deb -x "$deb" "$dir"
+    [ -s "$dir$SURY_KEYRING" ] && [ ! -L "$dir$SURY_KEYRING" ] || die_refused "The keyring package has no $SURY_KEYRING. Not using it."
+    install -m 644 -o root -g root "$dir$SURY_KEYRING" "$SURY_KEYRING"
+    echo "Signing key(s): $(gpg --show-keys --with-colons "$SURY_KEYRING" 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }' | tr '\n' ' ')"
+}
+
+# Redis or Valkey (v0.8). Ubuntu 26.04 has no Redis package any more (Redis changed its
+# licence); it ships Valkey, the Redis fork that speaks the same protocol: Laravel queues, cache,
+# Horizon and phpredis/predis work unchanged, on the same port 6379. Older servers keep Redis.
+REDIS_UNITS="redis-server valkey-server"
+# redis_packages <VERSION_ID>: what provision installs for "redis".
+redis_packages() {
+    case "$1" in
+        22.04|24.04) echo "redis-server" ;;
+        *) echo "valkey-server valkey-tools" ;;
+    esac
+}
+redis_unit_for() { case "$1" in 22.04|24.04) echo "redis-server" ;; *) echo "valkey-server" ;; esac; }
+# redis_unit: the installed one (redis-server or valkey-server); fails if neither.
+redis_unit() {
+    local u
+    for u in $REDIS_UNITS; do
+        systemctl cat "$u.service" >/dev/null 2>&1 && { echo "$u"; return 0; }
+    done
+    return 1
+}
+redis_cli() { if command -v redis-cli >/dev/null 2>&1; then redis-cli "$@"; else valkey-cli "$@"; fi; }
+
+# nginx 1.25.1+ (Ubuntu 26.04 has 1.28) wants `http2 on;`: the old `listen 443 ssl http2` is
+# deprecated there and warns on every nginx -t. 22.04 (1.18) and 24.04 (1.24) only know the old
+# form. Decided by the installed nginx (no nginx, as in tests: the old form).
+nginx_has_http2_directive() {
+    local v a b c
+    v="$(nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9]*\.[0-9]*\.[0-9]*\).*|\1|p' || true)"
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r a b c <<< "$v"
+    [ "$a" -gt 1 ] || { [ "$a" -eq 1 ] && { [ "$b" -gt 25 ] || { [ "$b" -eq 25 ] && [ "$c" -ge 1 ]; }; }; }
+}
+# nginx_listen_443: the listen lines of an HTTPS server block (computed once per config).
+nginx_listen_443() {
+    if [ "$1" = new ]; then
+        echo "    listen 443 ssl;"
+        echo "    listen [::]:443 ssl;"
+        echo "    http2 on;"
+    else
+        echo "    listen 443 ssl http2;"
+        echo "    listen [::]:443 ssl http2;"
     fi
 }
 
@@ -1046,7 +1149,8 @@ plan_vs_server() {
     env_value "$(site_env "$domain")" QUEUE_CONNECTION "$user"; queue_conn="$ENV_VALUE"
     [ -n "$queue_conn" ] || queue_conn="unknown"
     if [ "$queue_conn" = "redis" ] || [ "$PLAN_HORIZON" -eq 1 ]; then
-        if command -v redis-server >/dev/null 2>&1 && systemctl is-active --quiet redis-server 2>/dev/null; then
+        local ru
+        if ru="$(redis_unit)" && systemctl is-active --quiet "$ru" 2>/dev/null; then
             check_pass "Redis" "running"
         else
             check_fail "Redis" "needed ($([ "$PLAN_HORIZON" -eq 1 ] && echo Horizon || echo "QUEUE_CONNECTION=redis")) but not running"

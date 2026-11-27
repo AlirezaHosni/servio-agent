@@ -104,7 +104,8 @@ site_laravel_log() {
 # Server logs (item 78)
 # ---------------------------------------------------------------------------------------------
 
-# sshd's messages: /var/log/auth.log on Ubuntu; the journal if there's no such file.
+# sshd's messages: /var/log/auth.log on Ubuntu; the journal if there's no such file. OpenSSH 9.8+
+# logs as sshd-session, and 10.x (Ubuntu 26.04) also as sshd-auth.
 auth_source() {
     if [ -r "$SYS_LOG_DIR/auth.log" ]; then
         tail -n 20000 "$SYS_LOG_DIR/auth.log"
@@ -127,7 +128,7 @@ auth_summary() {
     local log="$1" lines="$2"
     echo "SSH logins (newest last, at most $lines):"
     printf '%s\n' "$log" | perl -ne '
-        next unless /^(\S+(?:\s+\d+\s+[\d:]+)?)\s.*sshd(?:-session)?\[\d+\]: Accepted (\w+) for (\S+) from (\S+) port \d+/;
+        next unless /^(\S+(?:\s+\d+\s+[\d:]+)?)\s.*sshd(?:-session|-auth)?\[\d+\]: Accepted (\w+) for (\S+) from (\S+) port \d+/;
         my ($t, $how, $user, $ip) = ($1, $2, $3, $4);
         $user = "(odd name)" unless $user =~ /^[a-z_][a-z0-9_.-]{0,31}$/;
         $ip = "(odd address)" unless $ip =~ /^[0-9a-fA-F.:]{3,45}$/;
@@ -137,7 +138,7 @@ auth_summary() {
     echo
     echo "Failed attempts, per address (top 10):"
     printf '%s\n' "$log" | perl -ne '
-        if (/sshd(?:-session)?\[\d+\]: (?:Failed \w+ for (?:invalid user )?\S+|Invalid user \S*) from (\S+)/) {
+        if (/sshd(?:-session|-auth)?\[\d+\]: (?:Failed \w+ for (?:invalid user )?\S+|Invalid user \S*) from (\S+)/) {
             my $ip = $1; $ip = "(odd address)" unless $ip =~ /^[0-9a-fA-F.:]{3,45}$/; $n{$ip}++; $t++;
         }
         END {
